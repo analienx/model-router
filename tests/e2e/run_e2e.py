@@ -39,7 +39,10 @@ MODEL_IDS = {"fast": "claude-haiku-5-5", "standard": "claude-sonnet-5-5", "deep"
 class Run:
     def __init__(self, args):
         self.args = args
-        self.tmp = Path(tempfile.mkdtemp(prefix="router-e2e-"))
+        # resolve(): Windows temp paths can be 8.3 short names (RUNNER~1) and macOS temp lives behind the
+        # /var -> /private/var symlink. Claude Code resolves its working folder to the real long path, so
+        # unresolved file paths look like they are outside the project and edits get refused.
+        self.tmp = Path(tempfile.mkdtemp(prefix="router-e2e-")).resolve()
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.router_home = self.home / ".claude-router"
@@ -79,14 +82,18 @@ class Run:
         work = self.tmp / ("work-%s" % name)
         work.mkdir()
         env = self.env(MOCK_LOG=str(log), MOCK_PORT_FILE=str(port_file), MOCK_WORKDIR=str(work), **mock_env)
+        out_path = self.tmp / ("mock-%s.stderr.txt" % name)
+        out = open(str(out_path), "wb")
         proc = subprocess.Popen([sys.executable, str(HERE / "mock_anthropic.py")], env=env,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.time() + 20
-        while not port_file.exists() and time.time() < deadline:
+                                stdout=out, stderr=subprocess.STDOUT)
+        deadline = time.time() + 60
+        while not port_file.exists() and time.time() < deadline and proc.poll() is None:
             time.sleep(0.1)
         if not port_file.exists():
             proc.kill()
-            sys.exit("mock server did not start")
+            out.close()
+            detail = out_path.read_text(encoding="utf-8", errors="replace")[-1500:]
+            raise RuntimeError("mock server did not start (exit code %s): %s" % (proc.poll(), detail))
         return proc, int(port_file.read_text(encoding="utf-8")), log, work
 
     @staticmethod
@@ -135,6 +142,20 @@ class Run:
             return json.loads(p.stdout.strip().splitlines()[-1]).get("result")
         except (ValueError, IndexError, AttributeError):
             return None
+
+    @staticmethod
+    def write_evidence(recs, actor, index=-1):
+        """Text of a Write tool_result (default: the last one) in an actor's fullest request: why a file was or
+        wasn't created."""
+        mine = [r for r in recs if r.get("actor") == actor]
+        if not mine:
+            return "no %s request reached the API" % actor
+        full = max(mine, key=lambda r: len(r.get("tool_results") or []))
+        writes = [t for t in full.get("tool_results") or [] if t.get("tool") == "Write"]
+        try:
+            return "Write result: " + writes[index].get("text", "")[:150]
+        except IndexError:
+            return "no Write result reached the API"
 
     @staticmethod
     def find_result(recs, tool, subagent_type=None):
@@ -202,7 +223,7 @@ class Run:
                    "`architect` subagent ran on the Opus deployment", "models=%s" % sorted({r["model"] for r in sub}))
         f = work / "arch_big.txt"
         self.check(s, f.exists() and len(f.read_text(encoding="utf-8").splitlines()) == 200,
-                   "`architect` was ALLOWED its 200-line Write (file created)")
+                   "`architect` was ALLOWED its 200-line Write (file created)", self.write_evidence(recs, "subagent"))
 
     def scenario_fast(self):
         s = "FAST"
@@ -219,7 +240,8 @@ class Run:
         ctx = next((r["router_context"] for r in main if r.get("router_context")), None)
         self.check(s, p.returncode == 0, "real `claude` finished", "exit %s" % p.returncode)
         self.check(s, ctx and "Verdict for this prompt: FAST" in ctx, "FAST directive injected", (ctx or "")[:110])
-        self.check(s, (work / "fast_small.txt").exists(), "guard ALLOWED a 5-line Write within the FAST budget (40)")
+        self.check(s, (work / "fast_small.txt").exists(), "guard ALLOWED a 5-line Write within the FAST budget (40)",
+                   self.write_evidence(recs, "main", index=0))
         full = max(main, key=lambda r: len(r.get("tool_results") or [])) if main else {}
         results = [t for t in full.get("tool_results") or [] if t.get("tool") == "Write"]
         big = results[1] if len(results) > 1 else None
@@ -248,7 +270,8 @@ class Run:
         fb = self.find_result(main, "Agent", "deep-haiku") or self.find_result(main, "Task", "deep-haiku")
         self.check(s, fb is not None and "[router]" not in fb["text"],
                    "guard ALLOWED `deep-haiku` because the transcript shows the 429", (fb or {}).get("text", "")[:140])
-        self.check(s, (work / "fallback.txt").exists(), "`deep-haiku` did the work (file created)")
+        self.check(s, (work / "fallback.txt").exists(), "`deep-haiku` did the work (file created)",
+                   self.write_evidence(recs, "subagent"))
         fb_models = sorted({r["model"] for r in recs if r.get("actor") == "subagent" and r.get("response") != "429"})
         self.check(s, fb_models == [DEPLOYMENTS["fast"]], "`deep-haiku` ran on the Haiku deployment", "models=%s" % fb_models)
 
@@ -263,7 +286,7 @@ class Run:
             plain_ok = p.returncode == 0 and (work / "fast_big.txt").exists()
             self.check(s, plain_ok and not any(r.get("router_context") for r in plain_recs),
                        "plain `claude` (not started by the launcher) is untouched: no verdict, no limits",
-                       "exit %s" % p.returncode)
+                       "exit %s; %s" % (p.returncode, self.write_evidence(plain_recs, "main")))
             # Delete the router code: hooks must do nothing instead of blocking every prompt and edit.
             shutil.move(str(self.router_home / "router"), str(self.tmp / "router-moved-away"))
             for f in ("fast_small.txt", "fast_big.txt"):
@@ -274,7 +297,7 @@ class Run:
             self.save_output("missing-code", p)
             self.check(s, p.returncode == 0 and (work / "fast_big.txt").exists(),
                        "with the router code deleted, hooks do nothing and Claude Code is NOT blocked",
-                       "exit %s" % p.returncode)
+                       "exit %s; %s" % (p.returncode, self.write_evidence(self.records(log)[len(plain_recs):], "main")))
         finally:
             mock.kill()
             moved = self.tmp / "router-moved-away"
@@ -306,6 +329,7 @@ class Run:
             Path(out).mkdir(parents=True, exist_ok=True)
             (Path(out) / "e2e-report.md").write_text(text, encoding="utf-8")
             for f in list(self.tmp.glob("mock-*.jsonl")) + list(self.tmp.glob("claude-*.out.txt")) + \
+                    list(self.tmp.glob("mock-*.stderr.txt")) + \
                     list((self.tmp / "hook-inputs").glob("*.json")):
                 shutil.copy2(str(f), str(Path(out) / f.name))
             dec = self.router_home / "logs" / "decisions.jsonl"
@@ -336,6 +360,8 @@ def main():
                     fn()
                 except subprocess.TimeoutExpired as exc:
                     r.check(name, False, "scenario finished in time", str(exc)[:160])
+                except RuntimeError as exc:
+                    r.check(name, False, "scenario could start", str(exc)[:400])
         ok = r.report()
     finally:
         if args.keep:
