@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="558" viewBox="0 0 1280 558" role="img" aria-labelledby="title desc">
+<title id="title">What the router's hooks say</title>
+<desc id="desc">Terminal illustration: for an example DEEP prompt the judge hook adds the verdict to Haiku's context, the guard denies Haiku's own Write and a hand-off to implementer, and allows architect.</desc>
+<style>
+text{font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif}
+.mono{font-family:ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace}
+
+</style>
+<rect x=".5" y=".5" width="1279" height="557" rx="14" fill="#0b0f14" stroke="#30363d"/>
+<path d="M14.5 .5 H1265 a14 14 0 0 1 14 14 V46 H.5 V14.5 a14 14 0 0 1 14 -14 Z" fill="#161b22"/>
+<path d="M.5 46 H1279" stroke="#30363d"/>
+<circle cx="28" cy="23" r="6.5" fill="#ff5f57"/>
+<circle cx="50" cy="23" r="6.5" fill="#febc2e"/>
+<circle cx="72" cy="23" r="6.5" fill="#28c840"/>
+<text x="640" y="28" font-size="14" fill="#8b949e" text-anchor="middle">claude-router · what the hooks say (example prompt)</text>
+<text x="44" y="90" font-size="16" class="mono" xml:space="preserve"><tspan fill="#2dd4bf">$ </tspan><tspan fill="#e6edf3">claude-router</tspan></text>
+<text x="44" y="117" font-size="16" class="mono" xml:space="preserve"><tspan fill="#2dd4bf">&gt; </tspan><tspan fill="#e6edf3">Change the storage schema and migrate the old data</tspan></text>
+<text x="44" y="171" font-size="16" class="mono" xml:space="preserve"><tspan fill="#a5b4fc">UserPromptSubmit</tspan><tspan fill="#8b949e">  added to Haiku's context</tspan></text>
+<text x="44" y="198" font-size="16" class="mono" xml:space="preserve"><tspan fill="#e6edf3">  [router] Verdict for this prompt: </tspan><tspan fill="#fb923c">DEEP</tspan><tspan fill="#e6edf3"> (source: subscription:sonnet, confidence 0.90).</tspan></text>
+<text x="44" y="225" font-size="16" class="mono" xml:space="preserve"><tspan fill="#e6edf3">  Before answering or editing, delegate to the `architect` subagent with a self-contained</tspan></text>
+<text x="44" y="252" font-size="16" class="mono" xml:space="preserve"><tspan fill="#e6edf3">  brief … `implementer` is not accepted for this verdict. Main-thread file edits are blocked this turn.</tspan></text>
+<text x="44" y="306" font-size="16" class="mono" xml:space="preserve"><tspan fill="#a5b4fc">PreToolUse</tspan><tspan fill="#e6edf3">  Write(migrations/0042_storage.py)</tspan></text>
+<text x="1236" y="306" font-size="15" font-weight="700" class="mono" fill="#ff7b72" text-anchor="end">✕ denied</text>
+<text x="44" y="333" font-size="16" class="mono" xml:space="preserve"><tspan fill="#8b949e">  [router] Write of 50 lines would bring main-thread edits to more than the DEEP budget</tspan></text>
+<text x="44" y="360" font-size="16" class="mono" xml:space="preserve"><tspan fill="#8b949e">  of 0 lines for this prompt (already used: 0). Delegate with the Agent tool to `architect` …</tspan></text>
+<text x="44" y="414" font-size="16" class="mono" xml:space="preserve"><tspan fill="#a5b4fc">PreToolUse</tspan><tspan fill="#e6edf3">  Agent(implementer)</tspan></text>
+<text x="1236" y="414" font-size="15" font-weight="700" class="mono" fill="#ff7b72" text-anchor="end">✕ denied</text>
+<text x="44" y="441" font-size="16" class="mono" xml:space="preserve"><tspan fill="#8b949e">  [router] The router verdict for this prompt is DEEP: delegate to `architect`, not `implementer` …</tspan></text>
+<text x="44" y="495" font-size="16" class="mono" xml:space="preserve"><tspan fill="#a5b4fc">PreToolUse</tspan><tspan fill="#e6edf3">  Agent(architect)</tspan></text>
+<text x="1236" y="495" font-size="15" font-weight="700" class="mono" fill="#3fb950" text-anchor="end">✓ allowed</text>
+<text x="44" y="522" font-size="16" class="mono" xml:space="preserve"><tspan fill="#8b949e">  runs on the Opus deployment; its own edits are not limited</tspan></text>
+</svg>

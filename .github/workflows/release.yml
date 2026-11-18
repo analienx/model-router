@@ -1,0 +1,62 @@
+name: Release
+
+# Push a tag such as v1.2.1 (matching VERSION in router/common.py) to publish a GitHub release with the
+# offline zip and SETUP-offline.md attached. The notes come from that version's CHANGELOG.md section.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Tag matches router/common.py
+        run: |
+          v=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' router/common.py)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION $v in router/common.py"; exit 1
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: Build the offline bundle
+        run: python scripts/build_bundle.py --out dist
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1
+          fi
+          {
+            echo
+            echo "### Downloads"
+            echo
+            echo "- \`claude-model-router-$VERSION.zip\`: everything needed to install, plus \`SETUP.md\`."
+            echo "- \`SETUP-offline.md\`: the full guide and the source of every file, with SHA-256 checksums, for mail systems that block attachments."
+            echo
+            echo "SHA-256:"
+            echo '```'
+            (cd dist && sha256sum ./*.zip SETUP-offline.md | sed 's#\./##')
+            echo '```'
+          } >> notes.md
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SETUP-offline.md \
+            --title "model-router $VERSION" --notes-file notes.md --verify-tag

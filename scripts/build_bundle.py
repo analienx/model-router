@@ -24,6 +24,8 @@ FILES = [
     "agents/architect.md", "agents/implementer.md", "agents/deep-haiku.md",
     "tests/fake_claude.py", "tests/test_router.py", "tests/e2e/mock_anthropic.py", "tests/e2e/run_e2e.py",
 ]
+ZIP_ONLY = ["docs/assets/%s" % n for n in ("banner-light.svg", "banner-dark.svg", "how-it-works-light.svg",
+                                           "how-it-works-dark.svg", "session.svg")]  # README images, not in the appendix
 LANG = {".py": "python", ".md": "markdown", ".json": "json", "": "text"}
 FENCE = "`" * 6  # built, never written literally, so no source file can contain it by accident
 APPENDIX_TITLE = "## 15. Appendix: full source of every file"
@@ -72,11 +74,11 @@ def main(argv=None):
     top = "claude-model-router-%s" % ver
     zpath = out / ("%s.zip" % top)
     with zipfile.ZipFile(str(zpath), "w", zipfile.ZIP_DEFLATED) as z:
-        for name in FILES:
+        for name in FILES + ZIP_ONLY:
             z.write(str(ROOT / name), "%s/%s" % (top, name))
         z.writestr("%s/SETUP.md" % top, setup.encode("utf-8"))
     digest = hashlib.sha256(zpath.read_bytes()).hexdigest()
-    sys.stdout.write("built %s (%d files, sha256 %s)\nbuilt %s\n" % (zpath, len(FILES) + 1, digest, out / "SETUP-offline.md"))
+    sys.stdout.write("built %s (%d files, sha256 %s)\nbuilt %s\n" % (zpath, len(FILES) + len(ZIP_ONLY) + 1, digest, out / "SETUP-offline.md"))
     return 0
 
 

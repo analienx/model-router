@@ -1,4 +1,4 @@
-name: CI
+name: Unit tests
 
 on:
   push:
@@ -6,17 +6,16 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "17 5 * * 1"   # weekly: also checks the newest Claude Code release
+    - cron: "17 5 * * 1"   # weekly: also catches new Python pre-releases
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: unit-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  CLAUDE_CODE_VERSION: "2.1.327"   # pinned; bump together with the "tested with" badge in README.md
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
@@ -36,62 +35,34 @@ jobs:
           - { os: macos-latest,   python: "3.10" }
           - { os: macos-latest,   python: "3.13" }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           allow-prereleases: true
       - name: Unit tests (fake claude, no network)
         run: python -m unittest discover -s tests -v
 
-  e2e:
-    name: e2e · ${{ matrix.os }} · Claude Code ${{ matrix.claude }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    continue-on-error: ${{ matrix.claude == 'latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        claude: [pinned]
-        include:
-          - { os: ubuntu-latest, claude: latest }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install Claude Code
-        shell: bash
-        run: |
-          if [ "${{ matrix.claude }}" = "latest" ]; then v=latest; else v="$CLAUDE_CODE_VERSION"; fi
-          npm install -g "@anthropic-ai/claude-code@$v"
-          claude --version
-      - name: End-to-end proof (real Claude Code, local mock API, no credentials)
-        run: python tests/e2e/run_e2e.py --artifacts e2e-artifacts --debug-hooks
-      - name: Upload e2e evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-evidence-${{ matrix.os }}-${{ matrix.claude }}
-          path: e2e-artifacts
-          if-no-files-found: warn
-
   bundle:
-    name: offline bundle
+    name: offline bundle + README images
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Build zip + SETUP-offline.md
         run: python scripts/build_bundle.py --out dist
-      - uses: actions/upload-artifact@v4
+      - name: README images match scripts/build_assets.py
+        run: |
+          python scripts/build_assets.py
+          if [ -n "$(git status --porcelain -- docs/assets)" ]; then
+            git status --porcelain -- docs/assets
+            echo "::error::docs/assets is out of date: run python scripts/build_assets.py and commit the result"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v5
         with:
           name: offline-bundle
           path: dist

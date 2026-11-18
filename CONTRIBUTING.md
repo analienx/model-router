@@ -27,6 +27,17 @@ Useful flags:
 - `--debug-hooks`: save every hook input;
 - `--artifacts DIR`: copy the report and logs to `DIR`.
 
+### README images
+
+The images in `docs/assets/` are generated. Edit `scripts/build_assets.py`, never the SVG files, then run:
+
+```bash
+python scripts/build_assets.py           # light and dark SVGs
+python scripts/build_assets.py --png     # also social-preview.png (needs: pip install playwright)
+```
+
+CI fails if the committed SVGs differ from what the script generates. Text in `session.svg` quotes the hooks' real messages; keep it in step with `router/judge_hook.py` and `router/guard_hook.py`.
+
 ## Rules for changes
 
 - **Every bug fix ships with a test that fails without the fix.** Name review or e2e regressions `test_review_*` / `test_e2e_*`.
@@ -38,4 +49,4 @@ Useful flags:
 
 ## Pull requests
 
-Fill in the template. CI must be green on all three operating systems. For changes to how the router talks to Claude Code, include the relevant part of the end-to-end report.
+Fill in the template. Both workflows, **Unit tests** and **End-to-end**, must be green on all three operating systems. For changes to how the router talks to Claude Code, include the relevant part of the end-to-end report.

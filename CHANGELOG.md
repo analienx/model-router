@@ -10,6 +10,12 @@ Found by the end-to-end test on GitHub's runners.
 - **A "429" in a notification's ids or file path no longer counts as a rate-limit error.** The `<output-file>` path carries the project folder, so an `architect` that failed for another reason in a folder such as `issue-429` unlocked `deep-haiku`. Both the judge hook and the guard now ignore `<task-id>`, `<tool-use-id>` and `<output-file>` when looking for 429/529.
 - End-to-end test: the mock API waited for a 429 with a pattern that also matched a random agent id (`a73c74297540d6f7e`), so on one run it called `deep-haiku` before `architect` had failed, and the guard correctly refused. The mock now waits for the actual failure notification. Temp paths are resolved (Windows 8.3 names, the macOS `/var` symlink), and the mock server's errors are captured in the report.
 
+### Added
+- Releases: pushing a version tag publishes a GitHub release with the offline zip and `SETUP-offline.md` attached, after the unit tests pass.
+- A new README with generated light and dark images (`scripts/build_assets.py`), checked in CI. The offline zip now includes them.
+- The end-to-end test is its own workflow with its own badge. GitHub Actions are updated to their current major versions, and Dependabot keeps them current.
+- `CODE_OF_CONDUCT.md`, `SUPPORT.md` and `CODEOWNERS`.
+
 ## [1.2.0] - 2026-11-18
 
 Found by the new end-to-end test with the real Claude Code CLI.

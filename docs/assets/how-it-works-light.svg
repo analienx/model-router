@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+<title id="title">How model-router routes a prompt</title>
+<desc id="desc">1. The judge hook rates each new prompt with Sonnet on the subscription, then Sonnet on Azure Foundry, then keyword rules. 2. The Haiku session receives the verdict: FAST it does itself, STANDARD goes to implementer on Sonnet, DEEP to architect on Opus; deep-haiku is the fallback after a 429 or 529. 3. The guard hook checks every edit and Agent call.</desc>
+<style>
+text{font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif}
+.mono{font-family:ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace}
+.flow{stroke-dasharray:2 12;stroke-linecap:round;animation:flow 1.4s linear infinite}
+.d1{animation-delay:-.47s}.d2{animation-delay:-.93s}
+@keyframes flow{to{stroke-dashoffset:-28}}
+@media (prefers-reduced-motion:reduce){.flow{animation:none}}
+</style>
+<defs>
+<linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#f97316"/>
+</linearGradient>
+<pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1.5" cy="1.5" r="1.1" fill="#d8dee4"/></pattern>
+<radialGradient id="glow-a" cx=".78" cy=".15" r=".6"><stop offset="0" stop-color="#4f46e5" stop-opacity="0.10"/><stop offset="1" stop-color="#4f46e5" stop-opacity="0"/></radialGradient>
+<radialGradient id="glow-b" cx=".98" cy="1" r=".5"><stop offset="0" stop-color="#c2410c" stop-opacity="0.10"/><stop offset="1" stop-color="#c2410c" stop-opacity="0"/></radialGradient>
+<radialGradient id="glow-c" cx=".05" cy="1" r=".45"><stop offset="0" stop-color="#0d9488" stop-opacity="0.10"/><stop offset="1" stop-color="#0d9488" stop-opacity="0"/></radialGradient>
+<linearGradient id="fade" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity=".15"/><stop offset=".5" stop-color="#fff" stop-opacity=".45"/><stop offset="1" stop-color="#fff" stop-opacity="1"/></linearGradient>
+<mask id="fade-mask"><rect width="100%" height="100%" fill="url(#fade)"/></mask>
+<marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#59636e"/></marker>
+<marker id="arrow-deep" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#c2410c"/></marker>
+<marker id="arrow-guard" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf222e"/></marker>
+</defs>
+<rect width="1280" height="640" rx="24" fill="#ffffff"/>
+<rect width="1280" height="640" rx="24" fill="url(#dots)" mask="url(#fade-mask)"/>
+<rect width="1280" height="640" rx="24" fill="url(#glow-a)"/>
+<rect width="1280" height="640" rx="24" fill="url(#glow-b)"/>
+<rect width="1280" height="640" rx="24" fill="url(#glow-c)"/>
+<rect x=".5" y=".5" width="1279" height="639" rx="23.5" fill="none" stroke="#d0d7de"/>
+<text x="32" y="62" font-size="24" fill="#1f2328" font-weight="700">How a prompt is routed</text>
+<text x="32" y="90" font-size="15" fill="#59636e">One judge call per new prompt. Follow-ups such as “yes” or “continue” skip it.</text>
+<rect x="32" y="236" width="172" height="104" rx="16" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="52" y="266" font-size="12" fill="#59636e" font-weight="700" letter-spacing="1.5">YOU</text>
+<text x="52" y="294" font-size="18" fill="#1f2328">type a prompt</text>
+<text x="52" y="320" font-size="13" fill="#59636e" class="mono">claude-router</text>
+<path d="M204 288 H244" stroke="#59636e" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="248" y="150" width="300" height="276" rx="16" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<circle cx="276" cy="182" r="13" fill="url(#mark)"/><text x="276" y="187" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<text x="298" y="189" font-size="20" fill="#1f2328" font-weight="700">Judge hook</text>
+<text x="276" y="216" font-size="14" fill="#59636e">rates every new prompt</text>
+<rect x="268" y="234" width="260" height="42" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<text x="284" y="260" font-size="15" fill="#1f2328">Sonnet<tspan fill="#59636e"> · subscription</tspan></text>
+<text x="512" y="260" font-size="12" fill="#59636e" text-anchor="end" class="mono">first</text>
+<rect x="268" y="288" width="260" height="42" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<text x="284" y="314" font-size="15" fill="#1f2328">Sonnet<tspan fill="#59636e"> · Azure Foundry</tspan></text>
+<text x="512" y="314" font-size="12" fill="#59636e" text-anchor="end" class="mono">then</text>
+<rect x="268" y="342" width="260" height="42" rx="10" fill="#ffffff" stroke="#d0d7de"/>
+<text x="284" y="368" font-size="15" fill="#1f2328">keyword rules<tspan fill="#59636e"></tspan></text>
+<text x="512" y="368" font-size="12" fill="#59636e" text-anchor="end" class="mono">last</text>
+<text x="276" y="410" font-size="13" fill="#59636e">unsure? → the stronger tier</text>
+<path d="M548 288 H596" stroke="#59636e" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="600" y="226" width="210" height="124" rx="16" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<circle cx="628" cy="258" r="13" fill="url(#mark)"/><text x="628" y="263" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<text x="650" y="265" font-size="19" fill="#1f2328" font-weight="700">Haiku session</text>
+<text x="620" y="294" font-size="14" fill="#59636e">gets the verdict and</text>
+<text x="620" y="314" font-size="14" fill="#59636e">the rules as context</text>
+<text x="620" y="336" font-size="12" fill="#59636e" class="mono">Azure Foundry</text>
+<path d="M810 288 C842 288 838 162 866 162" fill="none" stroke="#d0d7de" stroke-width="2"/>
+<path class="flow d0" d="M810 288 C842 288 838 162 866 162" fill="none" stroke="#0d9488" stroke-width="2.6"/>
+<rect x="870" y="118" width="378" height="88" rx="16" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<rect x="870" y="118" width="5" height="88" rx="2.5" fill="#0d9488"/>
+<circle cx="896" cy="148" r="5.5" fill="#0d9488"/>
+<text x="910" y="153" font-size="13" fill="#0d9488" font-weight="700" letter-spacing="1.4">FAST</text>
+<text x="1228" y="153" font-size="12" fill="#59636e" text-anchor="end" class="mono">Haiku edits ≤ 40 lines</text>
+<text x="890" y="184" font-size="17" fill="#1f2328">Haiku does it itself</text>
+<path d="M810 288 C842 288 838 270 866 270" fill="none" stroke="#d0d7de" stroke-width="2"/>
+<path class="flow d1" d="M810 288 C842 288 838 270 866 270" fill="none" stroke="#4f46e5" stroke-width="2.6"/>
+<rect x="870" y="226" width="378" height="88" rx="16" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<rect x="870" y="226" width="5" height="88" rx="2.5" fill="#4f46e5"/>
+<circle cx="896" cy="256" r="5.5" fill="#4f46e5"/>
+<text x="910" y="261" font-size="13" fill="#4f46e5" font-weight="700" letter-spacing="1.4">STANDARD</text>
+<text x="1228" y="261" font-size="12" fill="#59636e" text-anchor="end" class="mono">Haiku edits ≤ 10 lines</text>
+<text x="890" y="292" font-size="17" fill="#1f2328">implementer · Sonnet</text>
+<path d="M810 288 C842 288 838 378 866 378" fill="none" stroke="#d0d7de" stroke-width="2"/>
+<path class="flow d2" d="M810 288 C842 288 838 378 866 378" fill="none" stroke="#c2410c" stroke-width="2.6"/>
+<rect x="870" y="334" width="378" height="88" rx="16" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<rect x="870" y="334" width="5" height="88" rx="2.5" fill="#c2410c"/>
+<circle cx="896" cy="364" r="5.5" fill="#c2410c"/>
+<text x="910" y="369" font-size="13" fill="#c2410c" font-weight="700" letter-spacing="1.4">DEEP</text>
+<text x="1228" y="369" font-size="12" fill="#59636e" text-anchor="end" class="mono">Haiku edits: none</text>
+<text x="890" y="400" font-size="17" fill="#1f2328">architect · Opus</text>
+<path d="M1059 422 V442" stroke="#c2410c" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arrow-deep)"/>
+<text x="1072" y="437" font-size="12" fill="#c2410c" class="mono">429 / 529</text>
+<rect x="870" y="446" width="378" height="72" rx="16" fill="#ffffff" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="890" y="476" font-size="16" fill="#1f2328">deep-haiku<tspan fill="#59636e"> · Haiku, max effort</tspan></text>
+<text x="890" y="501" font-size="12" fill="#59636e" class="mono">only after a real rate-limit</text>
+<path d="M705 546 V354" stroke="#cf222e" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round" marker-end="url(#arrow-guard)"/>
+<text x="716" y="446" font-size="12" fill="#59636e" class="mono">checks every edit</text>
+<text x="716" y="464" font-size="12" fill="#59636e" class="mono">and Agent call</text>
+<rect x="248" y="548" width="1000" height="64" rx="16" fill="#f6f8fa" stroke="#cf222e" stroke-width="1.5"/>
+<circle cx="276" cy="580" r="13" fill="url(#mark)"/><text x="276" y="585" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<path transform="translate(306 580) scale(0.95)" d="M0 -10 L8.5 -6.8 V0 C8.5 6 4.6 9.4 0 11 C-4.6 9.4 -8.5 6 -8.5 0 V-6.8 Z" fill="none" stroke="#cf222e" stroke-width="2" stroke-linejoin="round"/><path transform="translate(306 580) scale(0.95)" d="M-3.6 0.4 L-0.8 3.2 L4 -2.4" fill="none" stroke="#cf222e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="324" y="586" font-size="18" fill="#1f2328" font-weight="700">Guard hook</text>
+<text x="442" y="586" font-size="15" fill="#59636e">denies over-budget edits · the wrong delegate · model overrides · fallback without a 429</text>
+</svg>

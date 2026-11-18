@@ -1,0 +1,60 @@
+name: End-to-end
+
+# Installs the router and drives the real Claude Code CLI through the claude-router launcher against a local
+# mock of the Anthropic/Foundry API. No model, account, credential or network access is used.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"   # weekly: checks the newest Claude Code release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CLAUDE_CODE_VERSION: "2.1.327"   # pinned; bump together with the "tested with" badge in README.md
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  e2e:
+    name: e2e · ${{ matrix.os }} · Claude Code ${{ matrix.claude }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    continue-on-error: ${{ matrix.claude == 'latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        claude: [pinned]
+        include:
+          - { os: ubuntu-latest, claude: latest }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Install Claude Code
+        shell: bash
+        run: |
+          if [ "${{ matrix.claude }}" = "latest" ]; then v=latest; else v="$CLAUDE_CODE_VERSION"; fi
+          npm install -g "@anthropic-ai/claude-code@$v"
+          claude --version
+      - name: End-to-end proof (real Claude Code, local mock API, no credentials)
+        run: python tests/e2e/run_e2e.py --artifacts e2e-artifacts --debug-hooks
+      - name: Upload e2e evidence
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: e2e-evidence-${{ matrix.os }}-${{ matrix.claude }}
+          path: e2e-artifacts
+          if-no-files-found: warn
