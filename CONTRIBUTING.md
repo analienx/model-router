@@ -47,6 +47,14 @@ CI fails if the committed SVGs differ from what the script generates. Text in `s
 - **Text subprocesses pin `encoding="utf-8"`**, and files are written with `write_exact` / `atomic_write_text`, never `Path.write_text`. Source rules in the tests enforce both.
 - **Keep the docs honest.** If behaviour changes, update `docs/SETUP.md` and `CHANGELOG.md` in the same pull request. Say what is proven and what is not.
 
+## Releasing
+
+1. Set `VERSION` in `router/common.py`, add the version's section to `CHANGELOG.md`, and update the version line at the top of `docs/SETUP.md`.
+2. Wait for both workflows to be green on `main`.
+3. Publish the release: on GitHub, **Releases → Draft a new release**, a new tag `vX.Y.Z` on `main`, then **Publish**. Or, from a clone, `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+The **Release** workflow checks that the tag matches `VERSION`, runs the unit tests, builds the offline bundle, and attaches the zip and `SETUP-offline.md` to the release, with that version's changelog section as the notes.
+
 ## Pull requests
 
 Fill in the template. Both workflows, **Unit tests** and **End-to-end**, must be green on all three operating systems. For changes to how the router talks to Claude Code, include the relevant part of the end-to-end report.

@@ -1,14 +1,23 @@
 name: Release
 
-# Push a tag such as v1.2.1 (matching VERSION in router/common.py) to publish a GitHub release with the
-# offline zip and SETUP-offline.md attached. The notes come from that version's CHANGELOG.md section.
+# Publishes the offline zip and SETUP-offline.md on a GitHub release, with that version's CHANGELOG.md section as
+# the notes. Either way works, and running both is safe:
+#   - on GitHub: Releases -> Draft a new release -> tag v1.2.1 on main -> Publish
+#   - from a clone: git tag v1.2.1 && git push origin v1.2.1
+# The tag must match VERSION in router/common.py.
 
 on:
   push:
     tags: ["v*.*.*"]
+  release:
+    types: [published]
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -34,9 +43,9 @@ jobs:
       - name: Release notes from CHANGELOG.md
         run: |
           awk -v v="$VERSION" '
-            $0 ~ "^## \\[" v "\\]" { on = 1; next }
-            on && /^## \[/ { exit }
-            on { print }
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
           ' CHANGELOG.md > notes.md
           if ! grep -q '[^[:space:]]' notes.md; then
             echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1
@@ -54,9 +63,16 @@ jobs:
             echo '```'
           } >> notes.md
           cat notes.md
-      - name: Publish
+      - name: Publish or update the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SETUP-offline.md \
-            --title "model-router $VERSION" --notes-file notes.md --verify-tag
+          tag="$GITHUB_REF_NAME"
+          if ! gh release view "$tag" >/dev/null 2>&1 &&
+             gh release create "$tag" dist/*.zip dist/SETUP-offline.md \
+               --title "model-router $VERSION" --notes-file notes.md --verify-tag; then
+            exit 0
+          fi
+          # The release already exists (published on GitHub, or by the other trigger): attach the files and notes.
+          gh release upload "$tag" dist/*.zip dist/SETUP-offline.md --clobber
+          gh release edit "$tag" --title "model-router $VERSION" --notes-file notes.md
