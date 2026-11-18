@@ -152,7 +152,11 @@ def decide(body):
         if "architect" not in called:
             return "tool_use", "main", [_tool(agent_tool(tools), MAIN_SCRIPTS["throttle"][0][1]())], "tool_use"
         if "deep-haiku" not in called:
-            if re.search(r"429|rate.?limit|overloaded", last_user_text(messages), re.I):
+            # Only the architect's failure notification counts. Its ids and output path are left out, and 429 must
+            # stand alone: a random agent id such as "a73c74297540d6f7e" once fired this too early.
+            last = last_user_text(messages)
+            error_text = re.sub(r"<(task-id|tool-use-id|output-file)>.*?</\1>", " ", last, flags=re.S)
+            if "<task-notification>" in last and re.search(r"\b(429|529)\b|rate.?limit|overloaded", error_text, re.I):
                 return "tool_use", "main", [_tool(agent_tool(tools), MAIN_SCRIPTS["throttle"][1][1]())], "tool_use"
             return "text", "main", [{"type": "text", "text": "waiting for architect"}], "end_turn"
         return "text", "main", [{"type": "text", "text": "main done"}], "end_turn"

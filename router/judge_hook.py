@@ -244,7 +244,7 @@ def throttled_call_id(prompt, state):
     st = NOTIF_STATUS_RE.search(prompt)
     if st and st.group(1).lower() in ("completed", "complete", "success", "succeeded", "running"):
         return None
-    return m.group(1) if common.THROTTLE_RE.search(prompt) else None
+    return m.group(1) if common.THROTTLE_RE.search(common.notification_error_text(prompt)) else None
 
 
 def is_notification(prompt):

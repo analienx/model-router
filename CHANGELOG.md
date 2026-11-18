@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/).
 
+## [1.2.1] - 2026-11-18
+
+Found by the end-to-end test on GitHub's runners.
+
+### Fixed
+- **A "429" in a notification's ids or file path no longer counts as a rate-limit error.** The `<output-file>` path carries the project folder, so an `architect` that failed for another reason in a folder such as `issue-429` unlocked `deep-haiku`. Both the judge hook and the guard now ignore `<task-id>`, `<tool-use-id>` and `<output-file>` when looking for 429/529.
+- End-to-end test: the mock API waited for a 429 with a pattern that also matched a random agent id (`a73c74297540d6f7e`), so on one run it called `deep-haiku` before `architect` had failed, and the guard correctly refused. The mock now waits for the actual failure notification. Temp paths are resolved (Windows 8.3 names, the macOS `/var` symlink), and the mock server's errors are captured in the report.
+
 ## [1.2.0] - 2026-11-18
 
 Found by the new end-to-end test with the real Claude Code CLI.
@@ -11,7 +19,7 @@ Found by the new end-to-end test with the real Claude Code CLI.
 - **Background-agent notifications no longer count as new prompts.** They keep the current verdict and edit counters, and no judge call is made.
 
 ### Added
-- `tests/e2e/`: a mock Anthropic/Foundry API and an end-to-end runner that drives the real Claude Code CLI through the installed launcher. It runs 24 checks in 4 scenarios.
+- `tests/e2e/`: a mock Anthropic/Foundry API and an end-to-end runner that drives the real Claude Code CLI through the installed launcher. It runs 25 checks in 5 scenarios.
 - GitHub Actions: unit tests on Linux, macOS and Windows with Python 3.8–3.14; end-to-end tests on all three OSes with a pinned Claude Code; a weekly informational run against the latest Claude Code; the offline bundle as an artifact.
 - `CLAUDE_ROUTER_DEBUG_DIR`: an opt-in dump of every hook input, for troubleshooting.
 - `foundry.base_url` accepts plain `http://` for localhost test servers only.
@@ -49,6 +57,7 @@ Fixes for all 15 findings of a code review, each with a regression test.
   - Foundry launcher;
   - installer with `doctor`, `test-judge` and `report`.
 
+[1.2.1]: https://github.com/analienx/model-router/releases/tag/v1.2.1
 [1.2.0]: https://github.com/analienx/model-router/releases/tag/v1.2.0
 [1.1.0]: https://github.com/analienx/model-router/releases/tag/v1.1.0
 [1.0.0]: https://github.com/analienx/model-router/releases/tag/v1.0.0

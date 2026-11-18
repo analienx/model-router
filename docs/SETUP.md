@@ -1,6 +1,6 @@
 # claude-model-router: setup and operating guide
 
-Version 1.2.0. Written against Claude Code 2.1.327 and its documentation as of November 2026. The full change history is in [CHANGELOG.md](../CHANGELOG.md).
+Version 1.2.1. Written against Claude Code 2.1.327 and its documentation as of November 2026. The full change history is in [CHANGELOG.md](../CHANGELOG.md).
 
 
 This package makes Claude Code run like this:
@@ -131,7 +131,7 @@ cd C:\Tools\claude-model-router
 python -m unittest discover -s tests
 ```
 
-Expected: `Ran 78 tests ... OK`. The tests use a fake `claude` (`tests/fake_claude.py`), so no model is called and nothing is billed.
+Expected: `Ran 79 tests ... OK`. The tests use a fake `claude` (`tests/fake_claude.py`), so no model is called and nothing is billed.
 
 ### 4.3 Log in to your Claude subscription (used by the judge)
 
@@ -666,8 +666,8 @@ These are rough estimates; measure your own with `test-judge` and `report`.
 Read these honestly before relying on the router.
 
 1. **What has been proven, and how.**
-   - **78 unit tests** with a fake `claude`, covering the hook contracts, environment separation, fallbacks, the guard's counting and agent rules, the installer, and malformed and non-ASCII input. 27 of them are regressions from the code review (24 fail on version 1.0.0; the other 3 guard new code or a Windows-only behaviour), and 2 come from the end-to-end run (both fail on 1.1.0).
-   - **An end-to-end test** (`tests/e2e/run_e2e.py`) that runs the **real Claude Code CLI** through the installed `claude-router` launcher against a local mock of the Anthropic/Foundry API, with no model, account or network. It checks 24 things across 4 scenarios: that the judge reaches the Sonnet deployment with `judge_system.md` as its only system prompt and no tools, the main session on the Haiku deployment, the injected verdict, denied and allowed edits, DEEP refusing `implementer`, `architect` on the Opus deployment, the 429 → `deep-haiku` fallback, an untouched plain `claude`, and missing router code not blocking Claude Code. It passes locally on Linux with Claude Code 2.1.327. The project's CI runs it on Linux, macOS and Windows.
+   - **79 unit tests** with a fake `claude`, covering the hook contracts, environment separation, fallbacks, the guard's counting and agent rules, the installer, and malformed and non-ASCII input. 27 of them are regressions from the code review (24 fail on version 1.0.0; the other 3 guard new code or a Windows-only behaviour), and 3 come from the end-to-end runs (2 fail on 1.1.0, 1 on 1.2.0).
+   - **An end-to-end test** (`tests/e2e/run_e2e.py`) that runs the **real Claude Code CLI** through the installed `claude-router` launcher against a local mock of the Anthropic/Foundry API, with no model, account or network. It checks 25 things across 5 scenarios (install, DEEP, FAST, 429 fallback, safety): that the judge reaches the Sonnet deployment with `judge_system.md` as its only system prompt and no tools, the main session on the Haiku deployment, the injected verdict, denied and allowed edits, DEEP refusing `implementer`, `architect` on the Opus deployment, the 429 → `deep-haiku` fallback, an untouched plain `claude`, and missing router code not blocking Claude Code. The project's CI runs it on every push on Linux, macOS and Windows with Claude Code 2.1.327, and weekly against the latest Claude Code; each run's summary has the full report.
    - **Not proven:** a real Foundry resource, a real subscription judge call in CI (the runners have no login, so the test asserts that step fails cleanly), and real interactive use. Your first real run is the final check; that is what sections 4.8 and 6 are for.
 2. **Windows-specific code** (the process-tree kill on judge timeout, the launcher's Ctrl+C handling, exact line endings) is exercised by the Windows CI jobs, not by hand. Check the CI results for your Claude Code version.
 3. **The judge isolation flags** (`--setting-sources`, `--settings` with `disableAllHooks`, `CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `--bare` for Foundry) are taken from the Claude Code documentation. Nobody has watched them in a live judge run. If your Claude Code rejects one, the judge fails visibly and the rules take over (section 11).
@@ -724,7 +724,7 @@ model-router/
     deep-haiku.md                haiku alias, effort max (429/529 fallback)
   tests/
     fake_claude.py               stand-in for the claude CLI (no network)
-    test_router.py               78 unit tests (test_review_* = code review regressions)
+    test_router.py               79 unit tests (test_review_* = code review regressions)
     e2e/
       mock_anthropic.py          local mock of the Anthropic / Foundry Messages API
       run_e2e.py                 end-to-end proof with the real Claude Code CLI

@@ -619,6 +619,31 @@ class GuardHookTests(RouterTestCase):
         self.judge("Change the storage schema again", FAKE_CLAUDE_MODE="deep")
         self.assertTrue(self.denied(self.guard("Agent", call)))
 
+    def test_e2e_429_in_a_notification_path_or_id_is_not_evidence(self):
+        # Found by CI: a random background-agent id contained "429". Ids and the output-file path (which
+        # carries the project folder, e.g. ".../issue-429/") are not error text and must never unlock deep-haiku.
+        self.judge("Change the storage schema and migrate old data", FAKE_CLAUDE_MODE="deep")
+        call = {"subagent_type": "deep-haiku", "prompt": "x"}
+        payload = {"session_id": "s1", "tool_name": "Agent", "tool_use_id": "toolu_ARCH", "hook_event_name": "PreToolUse",
+                   "tool_input": {"subagent_type": "architect", "prompt": "design"}}
+        self.assertIsNone(self.run_hook("guard_hook.py", payload, self.env()))
+        notif = ("<task-notification>\n<task-id>a73c74297540d6f7e</task-id>\n<tool-use-id>toolu_ARCH</tool-use-id>\n"
+                 "<output-file>/tmp/claude-1000/-home-me-issue-429/s1/tasks/a73c74297540d6f7e.output</output-file>\n"
+                 "<status>failed</status>\n<summary>Agent failed: %s</summary>\n</task-notification>")
+        other_failure = notif % "API Error: authentication failed"
+        # judge hook: a failure for another reason in a "429" folder does not mark the call as throttled
+        self.judge(other_failure, FAKE_CLAUDE_MODE="fail_if_called")
+        self.assertEqual(self.state().get("throttled_calls", []), [])
+        self.assertTrue(self.denied(self.guard("Agent", call)))
+        # guard's transcript fallback: same rule
+        prompt = {"type": "user", "message": {"role": "user", "content": "redesign the export locking"}}
+        tr = self._transcript(prompt, self._agent_call("toolu_ARCH", "architect"),
+                              {"type": "user", "message": {"role": "user", "content": other_failure}})
+        self.assertTrue(self.denied(self.guard("Agent", call, transcript=tr)))
+        # a real rate-limit error in the same notification still counts
+        self.judge(notif % "API Error: Request rejected (429) rate_limit", FAKE_CLAUDE_MODE="fail_if_called")
+        self.assertIsNone(self.guard("Agent", call))
+
     def test_review_other_subagent_limit_is_cumulative(self):
         self.set_tier("fast")
         for _ in range(4):

@@ -163,7 +163,8 @@ def throttle_evidence(transcript_path):
         if role != "user":
             continue
         if isinstance(content, str) and "<task-notification>" in content:
-            if any("<tool-use-id>%s</tool-use-id>" % tid in content for tid in recent) and THROTTLE_RE.search(content):
+            if (any("<tool-use-id>%s</tool-use-id>" % tid in content for tid in recent)
+                    and THROTTLE_RE.search(common.notification_error_text(content))):
                 return True
         elif isinstance(content, list):
             for b in content:

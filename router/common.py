@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 TIERS = ("fast", "standard", "deep")
 TIER_RANK = {t: i for i, t in enumerate(TIERS)}
@@ -25,7 +25,15 @@ PINNED_AGENTS = ("implementer", "architect")              # `model` override on 
 EDIT_AGENTS = ("implementer", "architect", "deep-haiku")  # may make large edits
 FALLBACK_AGENT = "deep-haiku"                             # only after a 429/529 from a pinned agent
 THROTTLE_RE = re.compile(r"\b(429|529)\b|rate[ _-]?limit|overloaded", re.IGNORECASE)
+# Fields of a <task-notification> that are ids or file paths, never error text: a project folder such as
+# ".../issue-429/" or a random id must not look like a rate-limit error.
+NOTIFICATION_META_RE = re.compile(r"<(task-id|tool-use-id|output-file)>.*?</\1>", re.DOTALL)
 MAX_TRACKED_CALLS = 50
+
+
+def notification_error_text(text):
+    """A <task-notification> without its id and path fields: the part that can describe an error."""
+    return NOTIFICATION_META_RE.sub(" ", text) if isinstance(text, str) else ""
 
 DEFAULT_STICKY_PHRASES = [
     "yes", "y", "yep", "yeah", "ok", "okay", "sure", "continue", "go on", "go ahead", "do it",

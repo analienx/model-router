@@ -63,7 +63,7 @@ Requirements: Claude Code (2.1.327 tested), Python 3.8+, a Claude subscription l
 
 ```powershell
 git clone https://github.com/analienx/model-router && cd model-router
-python -m unittest discover -s tests      # optional: 78 self-tests, no network
+python -m unittest discover -s tests      # optional: 79 self-tests, no network
 python install.py install                 # hooks + agents + launcher, for your user
 # edit ~/.claude-router/router.config.json: Foundry resource and deployment names
 python install.py doctor                  # checks everything, explains every problem
@@ -81,23 +81,25 @@ Every push runs three kinds of checks in [GitHub Actions](https://github.com/ana
 
 | Job | What it proves |
 |---|---|
-| **Unit tests** (Linux, macOS, Windows · Python 3.8–3.14) | 78 tests of the hooks, judge chain, guard, launcher and installer, with a fake `claude`. They include 27 regression tests from a code review (24 of them fail on version 1.0.0) and 2 from the end-to-end run (both fail on 1.1.0). |
-| **End-to-end** (Linux, macOS, Windows · real Claude Code) | Installs the router and runs the **real Claude Code CLI** through the `claude-router` launcher against a local mock of the Anthropic/Foundry API. No model, account or network is needed. The 24 checks are listed below. |
+| **Unit tests** (Linux, macOS, Windows · Python 3.8–3.14) | 79 tests of the hooks, judge chain, guard, launcher and installer, with a fake `claude`. They include 27 regression tests from a code review (24 of them fail on version 1.0.0) and 3 from the end-to-end runs (2 fail on 1.1.0, 1 on 1.2.0). |
+| **End-to-end** (Linux, macOS, Windows · real Claude Code) | Installs the router and runs the **real Claude Code CLI** through the `claude-router` launcher against a local mock of the Anthropic/Foundry API. No model, account or network is needed. Its 25 checks are summarised below. |
 | **End-to-end vs. latest Claude Code** (weekly, informational) | The same test against the newest Claude Code release, as an early warning when Claude Code changes. |
 
-What the end-to-end test verifies with the real Claude Code. Example from a local run on Linux with 2.1.327:
+What the end-to-end test verifies with the real Claude Code 2.1.327 on Linux, macOS and Windows. Every check must pass for the job to be green:
 
-| Scenario | Check | Result |
-|---|---|---|
-| DEEP | The judge reached the **Sonnet deployment**, with `judge_system.md` instead of Claude Code's system prompt and no tools | PASS |
-| DEEP | The main session ran on the **Haiku deployment**, and the hook injected the **DEEP directive** | PASS |
-| DEEP | The guard **denied** Haiku's own 50-line `Write`; the file was not created | PASS |
-| DEEP | The guard **denied** handing DEEP work to `implementer` | PASS |
-| DEEP | `architect` ran on the **Opus deployment** and was allowed its 200-line `Write` | PASS |
-| DEEP | The background-agent notification was **not re-judged** (exactly one judge call) | PASS |
-| FAST | A 5-line `Write` was allowed; the next 100-line `Write` was **denied** (budget) | PASS |
-| 429 fallback | Opus answered **HTTP 429**, and `deep-haiku` was allowed and did the work on the Haiku deployment | PASS |
-| safety | Plain `claude` is untouched; with the router code deleted, Claude Code is **not blocked** | PASS |
+| Scenario | Check |
+|---|---|
+| install | `install.py install` into an empty home folder writes the hooks to `~/.claude/settings.json` |
+| DEEP | The subscription judge ran with every credential stripped, failed cleanly (no login on the runner), and the chain moved on |
+| DEEP | The judge reached the **Sonnet deployment**, with `judge_system.md` instead of Claude Code's system prompt and no tools |
+| DEEP | The main session ran on the **Haiku deployment**, and the hook injected the **DEEP directive** |
+| DEEP | The guard **denied** Haiku's own 50-line `Write`; the file was not created |
+| DEEP | The guard **denied** handing DEEP work to `implementer` |
+| DEEP | `architect` ran on the **Opus deployment** and was allowed its 200-line `Write` |
+| DEEP | The background-agent notification was **not re-judged** (exactly one judge call) |
+| FAST | A 5-line `Write` was allowed; the next 100-line `Write` was **denied** (budget) |
+| 429 fallback | Opus answered **HTTP 429**, and `deep-haiku` was allowed and did the work on the Haiku deployment |
+| safety | Plain `claude` is untouched; with the router code deleted, Claude Code is **not blocked** |
 
 The full report for each run is in the run summary, and the raw mock-API logs are under **Artifacts**. To run it yourself: `python tests/e2e/run_e2e.py` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
