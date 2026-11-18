@@ -1,0 +1,38 @@
+name: Bug report
+description: Something does not route, block or install the way the docs say
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Please remove anything private (resource names, prompts, paths) before posting. For security problems, use the Security tab instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `python install.py doctor`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Output of `python install.py report --last 10`
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: "`claude --version`, Python version, operating system, model-router version"
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant part of router.config.json (secrets removed)
+      render: json

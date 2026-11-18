@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"   # weekly: also checks the newest Claude Code release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CLAUDE_CODE_VERSION: "2.1.327"   # pinned; bump together with the "tested with" badge in README.md
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  unit:
+    name: unit · ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,   python: "3.8" }
+          - { os: ubuntu-latest,  python: "3.12" }
+          - { os: ubuntu-latest,  python: "3.14" }
+          - { os: windows-latest, python: "3.8" }
+          - { os: windows-latest, python: "3.13" }
+          - { os: macos-latest,   python: "3.10" }
+          - { os: macos-latest,   python: "3.13" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - name: Unit tests (fake claude, no network)
+        run: python -m unittest discover -s tests -v
+
+  e2e:
+    name: e2e · ${{ matrix.os }} · Claude Code ${{ matrix.claude }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    continue-on-error: ${{ matrix.claude == 'latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        claude: [pinned]
+        include:
+          - { os: ubuntu-latest, claude: latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Claude Code
+        shell: bash
+        run: |
+          if [ "${{ matrix.claude }}" = "latest" ]; then v=latest; else v="$CLAUDE_CODE_VERSION"; fi
+          npm install -g "@anthropic-ai/claude-code@$v"
+          claude --version
+      - name: End-to-end proof (real Claude Code, local mock API, no credentials)
+        run: python tests/e2e/run_e2e.py --artifacts e2e-artifacts --debug-hooks
+      - name: Upload e2e evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-evidence-${{ matrix.os }}-${{ matrix.claude }}
+          path: e2e-artifacts
+          if-no-files-found: warn
+
+  bundle:
+    name: offline bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build zip + SETUP-offline.md
+        run: python scripts/build_bundle.py --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offline-bundle
+          path: dist

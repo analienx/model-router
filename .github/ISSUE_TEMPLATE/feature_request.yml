@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest a routing rule, provider, or tool
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+  - type: textarea
+    id: proof
+    attributes:
+      label: How could we test that it works?
+      description: Every change ships with a test. A sketch of the check helps a lot.

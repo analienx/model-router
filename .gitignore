@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+dist/
+e2e-artifacts/
+*.router-backup-*
+.DS_Store
