@@ -22,6 +22,6 @@ For a bounded task that will be delegated to Haiku, do the design work before th
 - Break complex work into small independent packages. Specify the algorithm, decision table, or patch whenever correctness depends on a choice.
 - Put a JSON package matching [the executable contract](../docs/HAIKU_HANDOFF.md) outside the repository. Every acceptance criterion must reference verification checks; where practical include a *red-before* regression in preflight and a *green-after* check.
 - Set narrow allowed paths and high risk / independent review where warranted. Never use a broad scope merely to avoid escalation.
-- Give Haiku ordered file-specific edits, the precise preflight and verify commands, and stop conditions.
+- Write the accompanying **human-readable Markdown plan** using [the exact seven-section Haiku plan template](../docs/HAIKU_PLAN_TEMPLATE.md), including confirmed facts, ordered file-specific edits, precise commands, acceptance criteria, and stop conditions. Keep its scope, checks, retries and review requirement aligned with the JSON package.
 
 Do not claim that the package is verified until the runner actually reports READY; do not claim the change is accepted until PASS or PASS_REVIEWED. REVIEW_REQUIRED means an external reviewer still has work to do.
