@@ -1,5 +1,9 @@
 # Executable Haiku handoffs
 
+Want the **simple Markdown plan Opus should give Haiku**? Start with
+[HAIKU_PLAN_TEMPLATE.md](HAIKU_PLAN_TEMPLATE.md). This document is the
+separate JSON contract and enforcement reference.
+
 This is an **opt-in execution contract**, not a second judge or autonomous agent. Opus
 makes the correctness decisions, Haiku executes bounded edits, a Python runner
 checks reproducible evidence, and an outside reviewer approves high-risk changes.
