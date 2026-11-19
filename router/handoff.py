@@ -33,7 +33,7 @@ def _metrics_path():
 
 
 def _safe_path(path):
-    if not isinstance(path, str) or not path or "\\x00" in path:
+    if not isinstance(path, str) or not path or "\x00" in path:
         raise HandoffError("scope paths must be nonempty strings")
     p = path.replace("\\\\", "/")
     if p.startswith("/") or re.match(r"^[A-Za-z]:", p):
@@ -54,7 +54,7 @@ def _command_spec(check):
     if not isinstance(check, dict) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", str(check.get("id", ""))):
         raise HandoffError("each check needs a short unique id")
     cmd = check.get("command")
-    if not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) and x and "\\x00" not in x for x in cmd):
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) and x and "\x00" not in x for x in cmd):
         raise HandoffError("check %s requires a nonempty argv command list" % check["id"])
     if check.get("expect", "success") not in ("success", "failure"):
         raise HandoffError("check %s expect must be success or failure" % check["id"])
@@ -144,7 +144,7 @@ def _changed(repo):
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=True).stdout
     except (OSError, subprocess.SubprocessError) as exc:
         raise HandoffError("cannot inspect worktree: %s" % exc)
-    parts = out.decode("utf-8", "replace").split("\\x00")
+    parts = out.decode("utf-8", "replace").split("\x00")
     paths = []
     i = 0
     while i < len(parts):
@@ -198,7 +198,7 @@ def _write_json(path, data):
                                      prefix=".handoff-", suffix=".tmp", delete=False) as fh:
         tmp = fh.name
         json.dump(data, fh, indent=2, sort_keys=True)
-        fh.write("\\n")
+        fh.write("\n")
     os.replace(tmp, str(path))
 
 
@@ -282,7 +282,7 @@ def _write_metric(pkg, result, state):
     path = _metrics_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(line, sort_keys=True) + "\\n")
+        fh.write(json.dumps(line, sort_keys=True) + "\n")
 
 
 def verify(package, repo, state_file=None):
