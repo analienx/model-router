@@ -13,3 +13,8 @@ You are standing in for a stronger model that is temporarily throttled. Work slo
 4. Make the smallest change that solves the brief and run the relevant tests.
 
 Report files changed, test output, and anything you are unsure about. State clearly at the top that this was a fallback run on the small model, so the user can decide whether to re-run it on the stronger model later.
+
+
+## When a handoff package is active
+
+If the session provides CLAUDE_ROUTER_HANDOFF, treat it as an enforceable execution contract, not background prose. Run the preflight first, and stop if it is not READY. Keep edits within allowed_paths, follow the Opus decisions without reinventing architecture, run the verification command after the change, and include its JSON evidence verbatim in the result. A failed verification gives at most the package's bounded local retry budget. Scope mismatch, stale baseline, changed contract, or a second failed verification means escalate with the exact evidence. REVIEW_REQUIRED is *not* finished. Never self-approve a review intended to be independent.
