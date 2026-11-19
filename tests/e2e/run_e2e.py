@@ -405,6 +405,12 @@ class Run:
 
 
 def main():
+    # The report contains Unicode (the launcher banner); Windows writes piped stdout as cp1252 otherwise.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--claude")
     ap.add_argument("--keep", action="store_true", help="keep the temporary folder")
