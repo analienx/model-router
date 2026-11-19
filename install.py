@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "router"))
 import common  # noqa: E402
 import judge_hook  # noqa: E402
 
-CODE_FILES = ["common.py", "judge_hook.py", "guard_hook.py", "launch.py", "judge_system.md"]
+CODE_FILES = ["common.py", "judge_hook.py", "guard_hook.py", "handoff.py", "launch.py", "judge_system.md"]
 AGENT_FILES = ["architect.md", "implementer.md", "deep-haiku.md"]
 MARKER = "<!-- installed by claude-model-router -->"
 HOOK_SCRIPTS = ("judge_hook.py", "guard_hook.py")

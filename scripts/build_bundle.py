@@ -19,10 +19,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FILES = [
     "README.md", "LICENSE", "CHANGELOG.md", "install.py",
-    "router/common.py", "router/judge_hook.py", "router/guard_hook.py", "router/launch.py",
+    "router/common.py", "router/judge_hook.py", "router/guard_hook.py", "router/handoff.py", "router/launch.py",
     "router/judge_system.md", "router/router.config.example.json",
     "agents/architect.md", "agents/implementer.md", "agents/deep-haiku.md",
-    "tests/fake_claude.py", "tests/test_router.py", "tests/e2e/mock_anthropic.py", "tests/e2e/run_e2e.py",
+    "docs/HAIKU_HANDOFF.md", "tests/fake_claude.py", "tests/test_router.py", "tests/test_handoff.py", "tests/e2e/mock_anthropic.py", "tests/e2e/run_e2e.py",
 ]
 ZIP_ONLY = ["docs/assets/%s" % n for n in ("banner-light.svg", "banner-dark.svg", "how-it-works-light.svg",
                                            "how-it-works-dark.svg", "session.svg")]  # README images, not in the appendix
