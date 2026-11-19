@@ -1,6 +1,6 @@
 # claude-model-router: setup and operating guide
 
-Version 1.2.1. Written against Claude Code 2.1.327 and its documentation as of November 2026. The full change history is in [CHANGELOG.md](../CHANGELOG.md).
+Version 1.3.0. Written against Claude Code 2.1.327 and its documentation as of November 2026. The full change history is in [CHANGELOG.md](../CHANGELOG.md).
 
 
 This package makes Claude Code run like this:
@@ -77,7 +77,7 @@ The router is **on only when you start Claude Code with the `claude-router` laun
 | The same, but only if the subscription judge fails | **Azure Foundry** (fallback judge) | Azure tokens |
 | Everything Claude Code normally sends: the conversation, file contents, tool results | **Azure Foundry** (main session and subagents) | Azure tokens |
 
-The judge receives **only** its instructions (`judge_system.md`) and the items in the first row. It is started with:
+The judge receives **only** its instructions (`judge_system.md`), the items in the first row, and the **tier** (one word) of the previous verdict in this session. It never receives the previous verdict's reason, because a reason written by a model can quote an earlier prompt, and that prompt may have been judged by the other provider. It is started with:
 - CLAUDE.md loading switched off (`CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`), so your user and project memory files are not sent;
 - your user settings left out (`--setting-sources project,local`, run in an empty folder);
 - hooks switched off (`disableAllHooks`);
@@ -88,7 +88,14 @@ Organisation-managed policy files still apply, as they do for every Claude Code 
 So once the router is installed, each prompt goes to **two providers**. If your company chose Azure Foundry for compliance or data residency, **get approval for the judge path first**. If you can't get it, delete the `subscription` step from `judge.chain` (section 5.6). The judge then runs on Foundry only and nothing goes to the subscription.
 
 
-The decision log stores **no prompt text** by default, only a 16-character hash and the length (section 5.8).
+**What the router keeps on your machine** (in `%USERPROFILE%\.claude-router`):
+
+| File | Contains by default | More only if you turn it on |
+|---|---|---|
+| `logs\decisions.jsonl` | per prompt: time, tier, source (for example `subscription:sonnet`), confidence, latency, reported cost, a 16-character hash and the length of the prompt, and for each failed judge step a short error **category** (`timeout`, `unusable-output`, ...). Reasons are kept only when the router wrote them itself (rules, shortcuts, notifications). | `logging.log_judge_details`: the reason written by a model judge and the full error messages, which can quote the prompt. `logging.log_prompt_text`: the first 2,000 characters of each prompt. |
+| `state\<session>.json` | the current verdict and its reason, edit counters and the IDs of this prompt's `architect`/`implementer` calls. Deleted after 7 days. | - |
+| `backups\` | copies of your settings and agent files from before each install change | - |
+| any folder you name | nothing | `CLAUDE_ROUTER_DEBUG_DIR`: every hook input, including prompts (troubleshooting only) |
 
 ---
 
@@ -117,7 +124,7 @@ The commands below use **Windows PowerShell**. Replace `%USERPROFILE%` or `$env:
 ### 4.1 Get the files onto the work computer
 
 1. Copy `claude-model-router.zip` to the work computer, then unzip it anywhere, for example `C:\Tools\claude-model-router`. The installer copies what it needs into `%USERPROFILE%\.claude-router`, so this folder only holds the installer and the tests.
-2. If your mail system blocks the zip (it contains `.py` files), send yourself the **offline bundle's** `SETUP.md` instead: its last section has the full source of every file with a SHA-256 checksum for each. Download `SETUP-offline.md` from the [latest release](https://github.com/analienx/model-router/releases/latest), or build it with `python scripts/build_bundle.py`. Recreate the folder layout from section 14 and paste each file in exactly as shown.
+2. If your mail system blocks the zip (it contains `.py` files), send yourself the **offline bundle's** `SETUP.md` instead: its last section has the full source of every file with a SHA-256 checksum for each. Download `SETUP-offline.md` from the [Releases page](https://github.com/analienx/model-router/releases), or build it with `python scripts/build_bundle.py`. Recreate the folder layout from section 14 and paste each file in exactly as shown.
 
 Open PowerShell in the unzipped folder:
 
@@ -131,7 +138,7 @@ cd C:\Tools\claude-model-router
 python -m unittest discover -s tests
 ```
 
-Expected: `Ran 79 tests ... OK`. The tests use a fake `claude` (`tests/fake_claude.py`), so no model is called and nothing is billed.
+Expected: `Ran 106 tests ... OK` (from the offline zip: `OK (skipped=2)`, because the zip does not ship the bundle builder). The tests use a fake `claude` (`tests/fake_claude.py`), so no model is called and nothing is billed.
 
 ### 4.3 Log in to your Claude subscription (used by the judge)
 
@@ -200,7 +207,10 @@ What the installer does:
 | Writes the launchers | `%USERPROFILE%\.claude-router\bin\claude-router(.cmd/.ps1)` | same |
 
 The installer:
-- never overwrites an agent file you wrote yourself (use `--force-agents` if you want it to);
+- stops without changing anything if the agents folder already has an `architect.md`, `implementer.md` or `deep-haiku.md` that the router did not write: Claude Code would load yours instead, and routed work would go to the wrong agent. Rename yours, or run install with `--force-agents` to replace it (a backup is kept);
+- installs into the profile Claude Code actually reads: `%CLAUDE_CONFIG_DIR%` when that variable is set, otherwise `%USERPROFILE%\.claude`. Run install, doctor and `claude-router` with the same `CLAUDE_CONFIG_DIR`; the launcher warns when it finds no router hooks in the active profile;
+- for a project in a subfolder of a git repository, adds ignore patterns relative to the repository root, and keeps a separate block per project, so uninstalling one project never touches another;
+- runs one install or uninstall at a time (a lock in the router folder), so parallel runs cannot lose each other's records;
 - keeps your existing hooks and settings, and only ever removes hooks that point at the router's own folder;
 - is safe to run again;
 - checks your settings file first and stops without changing anything if it isn't valid JSON or its `hooks` section has the wrong shape.
@@ -251,11 +261,31 @@ cd C:\src\your-repo
 claude-router
 ```
 
-You'll see a banner like:
+You'll see a banner like this (in colour on a terminal that supports it, with each tier in its own colour):
 
+```text
+╭────────────────────────────────────────────────────────────────────╮
+│ ◆ model-router 1.3.0          difficulty-based model routing       │
+├────────────────────────────────────────────────────────────────────┤
+│ FAST      → claude-haiku-5-5  Haiku handles it                     │
+│ STANDARD  → team-sonnet       implementer (Sonnet)                 │
+│ DEEP      → claude-opus-5-5   architect (Opus)                     │
+├────────────────────────────────────────────────────────────────────┤
+│ judge    subscription sonnet (max) → foundry sonnet (high) → rules │
+│ guard    Haiku edits ≤ 40 / 10 / 0 lines · retries 3               │
+│ foundry  contoso-ai · entra                                        │
+╰────────────────────────────────────────────────────────────────────╯
+  ::fast  ::standard  ::deep  choose a tier yourself · claude-router --router-dry-run
 ```
-[router] Foundry contoso-ai | haiku=claude-haiku-5-5 sonnet=claude-sonnet-5-5 opus=claude-opus-5-5 | judge: subscription sonnet (max)
+
+After each prompt, Claude Code shows you one line with the verdict. It is shown to you only and is not added to the model's context:
+
+```text
+◆ router: DEEP → architect (Opus) · judge subscription:sonnet 0.86 · 2.4s
+◆ router: FAST → Haiku handles it (edits ≤ 40 lines) · your ::fast override
 ```
+
+Background-agent notifications stay quiet, except when one unlocks the `deep-haiku` fallback. The look is set in section 5.9. Colour follows the usual conventions: none when output isn't a terminal or `NO_COLOR` is set, forced with `FORCE_COLOR=1`. Where the console can't print box-drawing characters (some Windows code pages), the banner falls back to plain ASCII.
 
 Any normal `claude` arguments still work, for example `claude-router --resume` or `claude-router -c`.
 
@@ -303,7 +333,8 @@ The file lives at `%USERPROFILE%\.claude-router\router.config.json`; set the env
     "main_edit_budget": { "fast": 40, "standard": 10, "deep": 0 },
     "other_subagent_edit_lines": 20
   },
-  "logging": { "enabled": true, "log_prompt_text": false }
+  "logging": { "enabled": true, "log_prompt_text": false, "log_judge_details": false },
+  "ui": { "banner": "full", "verdict_line": true }
 }
 ```
 
@@ -365,7 +396,7 @@ The launcher sets `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MOD
 
 | Field | Meaning |
 |---|---|
-| `max_retries` | Sets `CLAUDE_CODE_MAX_RETRIES` for the session. Claude Code normally retries up to 10 times with growing delays, which is the "two-minute wait" on 429 errors. A value of 3 fails faster, so the `deep-haiku` fallback starts sooner. |
+| `max_retries` | Sets `CLAUDE_CODE_MAX_RETRIES` for the session; an inherited value, or `CLAUDE_CODE_RETRY_WATCHDOG`, never overrides it (section 7.6). Claude Code normally retries up to 10 times with growing delays, which is the "two-minute wait" on 429 errors. A value of 3 fails faster, so the `deep-haiku` fallback starts sooner. |
 | `fallback_models` | Optional `--fallback-model` chain, for example `["sonnet", "haiku"]`. Claude Code uses it only when a model is **overloaded or unavailable**, not on rate limits (429). The switch lasts one turn and also applies to subagents. |
 | `extra_args` | Extra arguments always passed to `claude`, for example `["--permission-mode", "plan"]`. |
 
@@ -428,6 +459,18 @@ After changing timeouts, run `python install.py install` again so the hook timeo
 |---|---|
 | `enabled` | Writes one JSON line per prompt to `%USERPROFILE%\.claude-router\logs\decisions.jsonl`. |
 | `log_prompt_text` | `false` (default) stores only a hash and the length of the prompt. `true` also stores the first 2,000 characters, which is useful for calibration but should only be used if that is allowed for your data. |
+| `log_judge_details` | `false` (default) stores no text written by a model judge: its reason is replaced by a placeholder, and judge errors are stored as a short category. `true` keeps the judge's reason and the full error messages, which can quote the prompt. `test-judge` always shows the full detail on screen. |
+
+---
+
+### 5.9 `ui`
+
+| Field | Meaning |
+|---|---|
+| `banner` | `"full"` (default): the framed banner in section 4.9. `"compact"`: one line. `"off"`: nothing, except warnings such as "no router hooks". Terminals narrower than 72 columns always get the one-line form. |
+| `verdict_line` | `true` (default): after each prompt, Claude Code shows you the verdict, who does the work, the judge and its latency. `false`: nothing is shown; routing works the same. |
+
+`python install.py` uses coloured ✓ / ! / ✗ marks on a colour terminal, and the plain `[ok]` / `[warn]` / `[fail]` tags otherwise (for logs and scripts).
 
 ---
 
@@ -547,25 +590,38 @@ Before any of this, the hook writes a fresh **provisional** state: STANDARD, 0 l
 
 ### 7.3 What the guard enforces
 
+**Who is acting.** A hook input with an `agent_id` comes from a subagent, and `agent_type` says which one. Without `agent_id` it is the main session, even when you started it with `claude-router --agent NAME` (Claude Code then sends that name as `agent_type`). A named main session therefore gets the main session's budget and delegate rules, not a subagent's.
+
 | Situation | Result |
 |---|---|
 | Main thread, total lines this prompt within the tier budget | allowed, and counted |
 | Main thread, over budget (DEEP: any edit at all) | **denied**, with "Delegate with the Agent tool to `implementer` or `architect`…" |
 | Inside `implementer`, `architect` or `deep-haiku` | allowed, no limit |
-| Inside any other subagent, such as `general-purpose` or a fork, once all of them together pass 20 lines this prompt | **denied**, because those run on Haiku |
-| Main thread calls `implementer` while the verdict is DEEP | **denied**: "delegate to `architect`" |
-| Main thread calls `deep-haiku` while the verdict is STANDARD or DEEP, and no `architect`/`implementer` call of this prompt has failed with a 429/529 | **denied**: "call `architect` / `implementer` first" |
-| Agent call to `implementer` or `architect` with a `model` parameter | **denied**: Claude Code would otherwise honour that override over the agent's pinned model |
+| Inside any other subagent (`general-purpose`, a fork, `Explore`, your own agents), once all of them together pass 20 lines this prompt | **denied**, because those run on Haiku |
+| Agent call to `implementer` or `architect` with a `model` parameter, from anywhere | **denied**: Claude Code would otherwise honour that override over the agent's pinned model |
+| Any Agent call that doesn't match the delegate rules below | **denied**, with the agent to use instead |
+
+Delegate rules (the same table is in `router/guard_hook.py`):
+
+| Delegate | Main session, FAST | Main session, STANDARD | Main session, DEEP | From inside a subagent |
+|---|---|---|---|---|
+| `architect` | yes | yes | yes | yes |
+| `implementer` | yes | yes | **no** (use `architect`) | yes (so `architect` can hand off subtasks) |
+| `deep-haiku` | yes | only after a 429/529 | only after a 429/529 | only after a 429/529 |
+| `general-purpose`, or a fork (no `subagent_type`) | yes | **no** | **no** | yes (its edits share the 20-line limit) |
+| any other agent, such as `Explore` | yes | yes | yes | yes |
+
+"After a 429/529" means: an `architect` or `implementer` call **of the current prompt** failed with a rate-limit or overloaded error (section 7.5).
 | `Bash`, `Read` and other tools | not inspected (see section 12) |
 
 How lines are counted (every call counts **at least 1**, so DEEP blocks even an empty write):
 
 | Tool | Counted lines |
 |---|---|
-| Edit | the larger of the old and new text. With `replace_all`, that number times the occurrences in the file; an unreadable file counts as "too large". |
+| Edit | the larger of the old and new text. With `replace_all`, that number times the occurrences in the file, matched the way Claude Code matches them (so a file with Windows line endings counts every match); an unreadable file counts as "too large". |
 | Write | the larger of the new content and **the file it replaces**, so overwriting a 300-line file with 1 line counts 300 |
 | MultiEdit | the sum over its edits, with `replace_all` handled as for Edit |
-| NotebookEdit | the larger of the new source and the existing cell (a cell deletion counts the cell's lines) |
+| NotebookEdit | replace: the larger of the new source and the existing cell. Insert: the new cell only (the cell it is inserted after stays as it is). Delete: the deleted cell. |
 
 ### 7.4 Enforced versus advisory
 
@@ -574,7 +630,7 @@ How lines are counted (every call counts **at least 1**, so DEEP blocks even an 
 | The judge runs on every new prompt | Yes |
 | No large edits in the main thread when the tier says delegate | Yes (guard) |
 | `architect` and `implementer` keep their pinned models | Yes (guard) |
-| When Haiku delegates, the agent matches the verdict (DEEP -> `architect`) | Yes (guard) |
+| When Haiku delegates, the agent matches the verdict (the delegate rules in section 7.3) | Yes (guard) |
 | `deep-haiku` is used only after a 429/529 from `architect`/`implementer` | Yes (guard and judge hook, matched by tool-use ID, see section 7.5) |
 | Haiku actually calls `architect` for a DEEP question that needs no edit | **No.** It's a directive in the context, and Haiku usually follows it. Use `::deep` when it matters. |
 | Haiku switches to `deep-haiku` after a 429 or 529 | **No.** It's a directive; the shorter `max_retries` makes the error appear sooner. |
@@ -585,12 +641,28 @@ How lines are counted (every call counts **at least 1**, so DEEP blocks even an 
 - The **judge** is started with `CLAUDE_CODE_MAX_RETRIES=1` and a hard timeout. If the subscription is throttled, the Foundry judge runs next, then the rules.
 - The **session** uses `max_retries` (default 3) instead of Claude Code's 10, so a throttled subagent errors in seconds rather than minutes. Haiku is then told to rerun the brief with `deep-haiku` and to say so. The guard accepts `deep-haiku` only after a 429/529 failure of an `architect` or `implementer` call of this prompt:
   1. When the guard allows that call, it records the call's `tool_use_id`.
-  2. Claude Code reports the background agent's failure as a `<task-notification>` naming the same tool-use ID. The judge hook receives it before Haiku does, and marks that call as throttled if the text contains `429`, `529`, "rate limit" or "overloaded".
-  3. For agents that run synchronously, a `tool_result` for that ID in the transcript also counts.
+  2. Claude Code reports the background agent's result as a `<task-notification>` naming the same tool-use ID. The judge hook receives it before Haiku does, and marks that call as throttled only if the status is **failed** and the error text contains `429`, `529`, "rate limit" or "overloaded". The ID and the output-file path in the notification are ignored, so a project folder such as `issue-429` never counts.
+  3. For agents that run synchronously, an **error** `tool_result` for that ID in the transcript also counts.
 
-  Text anywhere else, such as the router's own directive, which mentions "429", never counts. This was verified end to end with the real Claude Code (section 12). If the guard refuses although the model really is throttled, start the next prompt with `::fast`.
+  The recorded IDs start empty with every new prompt, and the transcript check looks only at calls made after your latest prompt, so a 429 from an earlier prompt never unlocks the fallback. A successful result that merely mentions rate limits never counts, and neither does text anywhere else, such as the router's own directive, which mentions "429". This was verified end to end with the real Claude Code (section 12). If the guard refuses although the model really is throttled, start the next prompt with `::fast`.
 - **Foundry 429s** come from your deployment's quota (tokens or requests per minute). Raising the quota in Azure is the real fix.
 - `fallback_models` helps only with **overloaded or unavailable** errors; Claude Code never switches models because of a rate limit.
+
+### 7.6 Environment policy
+
+The router decides these variables for every Claude Code process it starts. An inherited value never changes the routing:
+
+| Variables | Main session (launcher) | Judge on Foundry | Judge on subscription |
+|---|---|---|---|
+| `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `CLAUDE_CODE_SUBAGENT_MODEL(_FORCE)`, `AWS_BEARER_TOKEN_BEDROCK` | removed, then the Foundry values are set | removed, then the Foundry values are set | removed |
+| `CLAUDE_CODE_MAX_RETRIES`, `CLAUDE_CODE_RETRY_WATCHDOG` | removed; `CLAUDE_CODE_MAX_RETRIES` = `launcher.max_retries` | removed; 1 retry | removed; 1 retry |
+| `CLAUDE_CODE_EFFORT_LEVEL`, `MAX_THINKING_TOKENS` | kept (your choice for the session) | removed; effort from `judge.chain` | removed; effort from `judge.chain` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | removed | removed | **kept**: it is a subscription login in token form (`claude setup-token`), and Claude Code uses it instead of the stored login |
+| everything else | kept | kept | kept |
+
+Settings files can also set variables in an `env` block, and those override the shell. `doctor` warns about provider variables there.
+
+**`--settings`.** Claude Code reads only one `--settings` argument. When you pass your own (`claude-router --settings my.json`, or in `launcher.extra_args`), the launcher merges it with the router's deployment mapping (`modelOverrides`) into one file, so your settings can never send requests to the raw model ID instead of your deployment. If your file maps one of the router's model IDs differently, the router's mapping wins and the launcher says so.
 
 ---
 
@@ -611,6 +683,7 @@ How lines are counted (every call counts **at least 1**, so DEEP blocks even an 
 
 ## 9. Tuning and calibration
 
+0. **Measure first.** `python install.py eval` runs the judge chain over a labeled set of prompts and prints a confusion matrix, the number of **under-routed** prompts (judged weaker than labeled: the costly mistake) and **over-routed** ones (slower and more expensive), latency and reported cost. It makes one real judge call per prompt. The shipped set (`tests/eval/routing_corpus.jsonl`, 30 synthetic prompts) is a start; copy it, add sanitized prompts from your own work with the tier you expect, and run `eval --corpus your-file.jsonl` after every change to `judge_system.md` or the judge model.
 1. **Collect data for one or two weeks** with the defaults. If your data policy allows it, set `logging.log_prompt_text` to `true` while calibrating.
 2. **Review** `python install.py report --last 50`. For each prompt, ask whether the tier was right, and write down the misses.
    - **Under-routing**, where a hard task got FAST, is the costly error: it costs you quality.
@@ -645,12 +718,15 @@ These are rough estimates; measure your own with `test-judge` and `report`.
 | Every verdict comes from `rules` and the log shows judge errors | The subscription judge fails | Run `python install.py test-judge --backend subscription` to see the real error. Usually you aren't logged in (step 4.3), the hooks can't find `claude` (set `judge.claude_path`), or it times out (lower the effort or raise `timeout_s` and reinstall) |
 | The judge works but every prompt is slow | Max effort | `effort: "high"`, or a lower `timeout_s` so the fallback starts sooner |
 | `/hooks` shows nothing | Wrong scope or settings file, or the session was started before installing | Re-run install for the right scope and restart `claude-router`; check that `doctor` reports "router hooks installed" |
+| `claude-router` warns "no router hooks in …", and the log shows no decisions | `CLAUDE_CONFIG_DIR` points Claude Code at a different profile from the one you installed into | Run `python install.py install` and `doctor` with the same `CLAUDE_CONFIG_DIR` you use for `claude-router` |
+| Install stops: "… already exist(s) and was not installed by the router" | You have your own `architect`, `implementer` or `deep-haiku` agent | Rename it, or `python install.py install --force-agents` (your file is backed up). `doctor` checks the agent Claude Code actually loads, including a project's `.claude/agents` |
 | `/hooks` shows the hooks but they never fire, or show errors | Your Claude Code version doesn't run exec-form hooks | `claude update`, or reinstall with `--hook-style bash` (Git Bash) or `--hook-style powershell` |
 | `doctor` warns about organisation-managed settings | IT policy can restrict hooks, providers or login methods | Ask IT whether user hooks and the Foundry provider are allowed |
 | "Routing is OFF … configuration is invalid" | JSON error or a wrong value in the config | `python install.py doctor` prints the exact field |
-| Edits denied: "…subagents running on the small model…" | Working as designed: `general-purpose` and forks run on Haiku | Let Haiku delegate to `implementer` or `architect` |
+| Edits denied: "…subagents running on the small model…" | Working as designed: `general-purpose`, forks and other agents run on Haiku | Let Haiku delegate to `implementer` or `architect` |
+| "`general-purpose` runs on your own small model. Delegate to …" | Working as designed for STANDARD and DEEP (section 7.3) | Nothing to do; Haiku retries with the agent named. Research agents such as `Explore` are allowed. |
 | "The router verdict for this prompt is DEEP: delegate to `architect`, not `implementer`" | Working as designed | Nothing to do; Haiku retries with `architect`. To force Sonnet for one prompt, start it with `::standard`. |
-| "`deep-haiku` is only for after … failed with a rate-limit (429) or overloaded (529) error" | No 429/529 is visible in the transcript yet | Let Haiku call `architect` or `implementer` first. If you know the model is throttled, start the next prompt with `::fast`. |
+| "`deep-haiku` is only for after … failed with a rate-limit (429) or overloaded (529) error" | No `architect`/`implementer` call of this prompt has failed with a 429/529 yet | Let Haiku call `architect` or `implementer` first. If you know the model is throttled, start the next prompt with `::fast`. |
 | Every verdict comes from `rules` and the error says "unknown option" (`--setting-sources`, `--settings`, `--effort`, `--bare`…) | Claude Code is older than the flags the judge uses | `claude update`, then `python install.py test-judge` |
 | You deleted `.claude-router` by hand and Claude Code now runs without routing | Working as designed: the hooks do nothing when the router code is missing, rather than blocking you | `python install.py install` again, or `python install.py uninstall` to remove the leftover hook entries |
 | Uninstall says "router code kept: still installed for …" | Another scope still uses the router | Uninstall that scope too, or use `--purge` to remove every scope at once |
@@ -666,9 +742,9 @@ These are rough estimates; measure your own with `test-judge` and `report`.
 Read these honestly before relying on the router.
 
 1. **What has been proven, and how.**
-   - **79 unit tests** with a fake `claude`, covering the hook contracts, environment separation, fallbacks, the guard's counting and agent rules, the installer, and malformed and non-ASCII input. 27 of them are regressions from the code review (24 fail on version 1.0.0; the other 3 guard new code or a Windows-only behaviour), and 3 come from the end-to-end runs (2 fail on 1.1.0, 1 on 1.2.0).
-   - **An end-to-end test** (`tests/e2e/run_e2e.py`) that runs the **real Claude Code CLI** through the installed `claude-router` launcher against a local mock of the Anthropic/Foundry API, with no model, account or network. It checks 25 things across 5 scenarios (install, DEEP, FAST, 429 fallback, safety): that the judge reaches the Sonnet deployment with `judge_system.md` as its only system prompt and no tools, the main session on the Haiku deployment, the injected verdict, denied and allowed edits, DEEP refusing `implementer`, `architect` on the Opus deployment, the 429 → `deep-haiku` fallback, an untouched plain `claude`, and missing router code not blocking Claude Code. The project's CI runs it on every push on Linux, macOS and Windows with Claude Code 2.1.327, and weekly against the latest Claude Code; each run's summary has the full report.
-   - **Not proven:** a real Foundry resource, a real subscription judge call in CI (the runners have no login, so the test asserts that step fails cleanly), and real interactive use. Your first real run is the final check; that is what sections 4.8 and 6 are for.
+   - **106 unit tests** with a fake `claude`, covering the hook contracts, environment separation, fallbacks, the guard's counting and agent rules, parallel hooks and installs, the installer, and malformed and non-ASCII input. 27 of them are regressions from the first code review (24 fail on version 1.0.0; the other 3 guard new code or a Windows-only behaviour), 3 come from the end-to-end runs (2 fail on 1.1.0, 1 on 1.2.0), and 21 cover the findings of the second review (version 1.3.0).
+   - **An end-to-end test** (`tests/e2e/run_e2e.py`) that runs the **real Claude Code CLI** through the installed `claude-router` launcher against a local mock of the Anthropic/Foundry API, with no model, account or network. It checks 34 things across 7 scenarios (install, DEEP, FAST, 429 fallback, named session, parallel calls, safety): that the judge reaches the Sonnet deployment with `judge_system.md` as its only system prompt, no tools and its configured effort (although the shell sets `CLAUDE_CODE_EFFORT_LEVEL=low`), the main session on the Haiku deployment (also when you pass your own `--settings`), the injected verdict, denied and allowed edits, DEEP refusing `implementer`, `architect` on the Opus deployment, the 429 → `deep-haiku` fallback within the retry limit (although the shell sets `CLAUDE_CODE_MAX_RETRIES=20` and `CLAUDE_CODE_RETRY_WATCHDOG=1`), a main session started with `--agent implementer` keeping the main-session budget, three parallel `architect` calls all recorded, an untouched plain `claude`, and missing router code not blocking Claude Code. The project's CI runs it on every push on Linux, macOS and Windows with Claude Code 2.1.327, and weekly against the latest Claude Code; each run's summary has the full report.
+   - **Not proven:** a real Foundry resource, a real subscription judge call in CI (the runners have no login, so the test asserts that step fails cleanly), real interactive use, and **routing quality** on your own work: the mock scripts the verdicts, so the end-to-end test proves the plumbing, not the judge's accuracy. `python install.py eval` measures that (section 9). Your first real run is the final check; that is what sections 4.8 and 6 are for.
 2. **Windows-specific code** (the process-tree kill on judge timeout, the launcher's Ctrl+C handling, exact line endings) is exercised by the Windows CI jobs, not by hand. Check the CI results for your Claude Code version.
 3. **The judge isolation flags** (`--setting-sources`, `--settings` with `disableAllHooks`, `CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `--bare` for Foundry) are taken from the Claude Code documentation. Nobody has watched them in a live judge run. If your Claude Code rejects one, the judge fails visibly and the rules take over (section 11).
 4. **Subscription login and Foundry on one machine:** Anthropic's documentation doesn't say how they coexist. The design keeps them apart: Foundry variables exist only in the launcher's process tree and are removed for the judge, and nothing goes into settings files. `test-judge` confirms that it works on your machine.
@@ -676,10 +752,10 @@ Read these honestly before relying on the router.
 6. **Delegation without edits is advisory.** For a DEEP *question*, Haiku is told to ask `architect` but isn't forced to. Which agent it delegates to *is* enforced.
 7. **The `deep-haiku` check depends on Claude Code's notification format** (`<task-notification>` with `<tool-use-id>` and the API error text, as written by Claude Code 2.1.327). If a future version words it differently, the fallback is refused and Haiku tells you; `::fast` gets around it, and the end-to-end test will show the change.
 8. **Prompt-only judging misses tasks that turn out to be hard partway through.** Escalation phrases ("still failing") and the edit budgets limit the damage, but the judge only ever sees the prompt.
-9. **Parallel tool calls can race on the per-prompt line counter.** The count is then a little low, never reset to zero.
+9. **Parallel hooks are serialised by a per-session lock.** If a hook can't get the lock within 5 seconds (a stuck process), it goes on without it rather than hang your session; the counters can then be slightly off for that prompt.
 10. **Exec-form hooks need a recent Claude Code.** Other hook styles are available (section 4.5).
 11. **The judge is a model and can be wrong.** It is told to treat the task text as data, but a prompt can still sway it. That's harmless for a single user, since the worst case is a wrong tier.
-12. **Same-family review:** results from `architect` (Opus) on work done by Haiku come from the same model family, so treat them as a second opinion, not as an independent verification. The code review behind version 1.1.0 was also done by the model family that wrote the code.
+12. **Same-family review:** results from `architect` (Opus) on work done by Haiku come from the same model family, so treat them as a second opinion, not as an independent verification. The code review behind version 1.1.0 was also done by the model family that wrote the code; the findings fixed in 1.3.0 came from an external review.
 
 ---
 
@@ -717,6 +793,7 @@ model-router/
     judge_hook.py                UserPromptSubmit hook (judge chain, directive)
     guard_hook.py                PreToolUse hook (edit budgets, agent-vs-verdict, pinned models)
     launch.py                    claude-router launcher (Foundry environment)
+    ui.py                        launch banner, per-prompt verdict line, coloured installer output
     judge_system.md              judge instructions and team examples (edit me)
     router.config.example.json   default configuration
   agents/
@@ -725,7 +802,8 @@ model-router/
     deep-haiku.md                haiku alias, effort max (429/529 fallback)
   tests/
     fake_claude.py               stand-in for the claude CLI (no network)
-    test_router.py               79 unit tests (test_review_* = code review regressions)
+    test_router.py               106 unit tests (test_review_* / test_review2_* = code review regressions)
+    eval/routing_corpus.jsonl    labeled synthetic prompts for `install.py eval`
     e2e/
       mock_anthropic.py          local mock of the Anthropic / Foundry Messages API
       run_e2e.py                 end-to-end proof with the real Claude Code CLI

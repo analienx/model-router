@@ -1,0 +1,32 @@
+# Synthetic, labeled prompts for `python install.py eval`. No real code, people or customer data.
+# expected = the weakest tier that should handle the task well. Add your team's own (sanitized) prompts in a copy.
+{"id": "fast-01", "expected": "fast", "prompt": "Where is the configuration file loaded?"}
+{"id": "fast-02", "expected": "fast", "prompt": "Rename the variable tmp to row_count in parse_rows."}
+{"id": "fast-03", "expected": "fast", "prompt": "Fix the typo 'recieve' in the README."}
+{"id": "fast-04", "expected": "fast", "prompt": "What does the --dry-run flag do in the deploy script?"}
+{"id": "fast-05", "expected": "fast", "prompt": "Add a docstring to the format_date helper."}
+{"id": "fast-06", "expected": "fast", "prompt": "List the files that import the logging module."}
+{"id": "fast-07", "expected": "fast", "prompt": "Bump the version string in setup.cfg to 2.4.1."}
+{"id": "fast-08", "expected": "fast", "prompt": "Explain what this regular expression matches: ^[A-Z]{2}\\d{4}$"}
+{"id": "fast-09", "expected": "fast", "prompt": "Change the default timeout constant from 30 to 45 seconds."}
+{"id": "fast-10", "expected": "fast", "prompt": "Show me how the tests are run in CI."}
+{"id": "std-01", "expected": "standard", "prompt": "Add a --format csv option to the export command, with tests."}
+{"id": "std-02", "expected": "standard", "prompt": "The date picker shows the wrong week number for January 1st. Find and fix it."}
+{"id": "std-03", "expected": "standard", "prompt": "Write unit tests for the invoice total calculation, including discounts and rounding."}
+{"id": "std-04", "expected": "standard", "prompt": "Refactor the three copy-pasted retry loops in the HTTP client into one helper."}
+{"id": "std-05", "expected": "standard", "prompt": "Add pagination to the /orders endpoint and update the client that calls it."}
+{"id": "std-06", "expected": "standard", "prompt": "Replace the deprecated datetime.utcnow() calls across the package."}
+{"id": "std-07", "expected": "standard", "prompt": "The nightly report job crashes on empty input files. Make it skip them and log a warning."}
+{"id": "std-08", "expected": "standard", "prompt": "Implement the 'remember me' checkbox on the login form using the existing session helper."}
+{"id": "std-09", "expected": "standard", "prompt": "Convert the settings loader from INI to TOML and keep reading the old INI files."}
+{"id": "std-10", "expected": "standard", "prompt": "Add input validation to the signup form and show the errors next to each field."}
+{"id": "deep-01", "expected": "deep", "prompt": "Change the storage schema to support multiple currencies and migrate the existing data without downtime."}
+{"id": "deep-02", "expected": "deep", "prompt": "Two users exporting at the same time sometimes get each other's rows. Find the root cause and fix it."}
+{"id": "deep-03", "expected": "deep", "prompt": "Design a plugin interface for the import pipeline so third parties can add formats without forking."}
+{"id": "deep-04", "expected": "deep", "prompt": "Our token refresh sometimes logs users out in a loop. Review the whole auth flow and fix it properly."}
+{"id": "deep-05", "expected": "deep", "prompt": "The service leaks memory over a few days under load. Investigate and fix it."}
+{"id": "deep-06", "expected": "deep", "prompt": "Split the monolithic orders module into separate services, keeping the public API backward compatible."}
+{"id": "deep-07", "expected": "deep", "prompt": "The integration test fails about one run in twenty. It still fails after the last two fixes. Find out why."}
+{"id": "deep-08", "expected": "deep", "prompt": "Add row-level permissions to the reporting API so customers can only see their own tenants' data."}
+{"id": "deep-09", "expected": "deep", "prompt": "Replace the hand-rolled encryption of stored API keys with a standard, reviewed approach and rotate existing keys."}
+{"id": "deep-10", "expected": "deep", "prompt": "Make the job scheduler safe to run on several machines at once without running a job twice."}

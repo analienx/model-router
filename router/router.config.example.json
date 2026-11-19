@@ -37,6 +37,11 @@
   },
   "logging": {
     "enabled": true,
-    "log_prompt_text": false
+    "log_prompt_text": false,
+    "log_judge_details": false
+  },
+  "ui": {
+    "banner": "full",
+    "verdict_line": true
   }
 }

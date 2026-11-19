@@ -146,6 +146,13 @@ def decide(body):
         return "text", "subagent", [{"type": "text", "text": "subagent done"}], "end_turn"
     sm = re.search(r"\[\[e2e:(\w+)\]\]", first)
     scenario = sm.group(1) if sm else "plain"
+    if scenario == "parallel":
+        # Three architect calls in ONE response: Claude Code runs them (and their PreToolUse hooks) in parallel.
+        if not called_subagents(messages):
+            calls = [_tool(agent_tool(tools), {"description": "part %d" % i, "subagent_type": "architect",
+                                               "prompt": "SUBAGENT-TASK write par_%d.txt" % i}) for i in range(3)]
+            return "tool_use", "main", calls, "tool_use"
+        return "text", "main", [{"type": "text", "text": "main done"}], "end_turn"
     if scenario == "throttle":
         # Subagents run in the background: their failure arrives later as a notification message.
         called = called_subagents(messages)
@@ -172,6 +179,23 @@ def decide(body):
 
 def _tool(name, args):
     return {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": name, "input": args}
+
+
+def find_effort(obj):
+    """The effort value anywhere in a request body (Claude Code sends it inside the request options)."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "effort" and isinstance(v, str):
+                return v
+            found = find_effort(v)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = find_effort(v)
+            if found:
+                return found
+    return None
 
 
 def log(record):
@@ -229,6 +253,7 @@ class Handler(BaseHTTPRequestHandler):
                   "system_has_default_prompt": "official CLI for Claude" in system_text(body),
                   "tool_results": tool_results(messages),
                   "router_context": whole[ctx:ctx + 400] if ctx >= 0 else None,
+                  "effort": find_effort(body),
                   "auth_headers": sorted(h for h in self.headers.keys() if h.lower() in ("x-api-key", "api-key", "authorization"))}
         if THROTTLE_MODEL and model == THROTTLE_MODEL:
             record["response"] = "429"

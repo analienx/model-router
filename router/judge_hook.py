@@ -23,6 +23,7 @@ import time
 
 sys.dont_write_bytecode = True
 import common  # noqa: E402  (same directory)
+import ui  # noqa: E402
 
 JUDGE_INSTRUCTION = "Classify the coding task given on standard input. Reply with the JSON object only."
 
@@ -121,8 +122,10 @@ def build_payload(prompt, cwd, prev, cfg):
     lines.append("repository folder: %s" % (os.path.basename(cwd.rstrip("/\\")) if cwd else "unknown"))
     if cfg["judge"]["include_git_signals"] and cwd:
         lines.append("git: %s" % git_signals(cwd))
-    if prev.get("tier"):
-        lines.append("previous verdict in this session: %s (%s)" % (prev["tier"], str(prev.get("reason") or "")[:150]))
+    if prev.get("tier") in common.TIERS:
+        # Only the tier, never the previous reason: that text may quote an earlier prompt, possibly one that was
+        # judged by a different provider.
+        lines.append("previous verdict in this session: %s" % prev["tier"])
     else:
         lines.append("previous verdict in this session: none")
     lines.append("</context>")
@@ -183,10 +186,7 @@ def call_claude(step, payload, cfg, environ=None):
             env = common.subscription_env(environ)
             extra = []
         else:
-            env = common.foundry_env(cfg, environ)
-            env["CLAUDE_ROUTER_JUDGE"] = "1"
-            env["CLAUDE_CODE_MAX_RETRIES"] = "1"
-            env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
+            env = common.judge_env(common.foundry_env(cfg, environ))
             extra = ["--bare"]  # bare mode keeps reading Foundry credentials and skips hooks, CLAUDE.md, plugins
         settings = common.judge_settings_file(cfg, backend)
         cmd = common.resolve_claude_cmd(cfg) + [
@@ -237,12 +237,16 @@ NOTIF_STATUS_RE = re.compile(r"<status>\s*([^<]+?)\s*</status>")
 
 
 def throttled_call_id(prompt, state):
-    """tool_use_id of a pinned agent call that this notification reports as failed with 429/529, else None."""
+    """tool_use_id of a pinned agent call of THIS prompt that the notification reports as failed with 429/529.
+
+    The notification must say <status>failed</status>: a successful agent whose summary mentions "rate limit"
+    is not evidence. pinned_calls holds only the current prompt's calls, so an older call never counts.
+    """
     m = NOTIF_ID_RE.search(prompt)
     if not m or m.group(1) not in state.get("pinned_calls", []):
         return None
     st = NOTIF_STATUS_RE.search(prompt)
-    if st and st.group(1).lower() in ("completed", "complete", "success", "succeeded", "running"):
+    if not st or st.group(1).lower() not in common.FAILED_STATUSES:
         return None
     return m.group(1) if common.THROTTLE_RE.search(common.notification_error_text(prompt)) else None
 
@@ -339,16 +343,78 @@ def directive(tier, decision, cfg):
                 "(goal, relevant files, constraints, what has been tried, how to verify). You may read and search first "
                 "to write the brief. `implementer` is not accepted for this verdict. " + btxt)
     rules = ("Rules: never pass `model` on an Agent call to `architect` or `implementer`, and never use "
-             "`general-purpose` or a fork for this work (they run on your own model). `deep-haiku` is accepted only "
-             "after `architect` or `implementer` failed with a rate-limit (429) or overloaded (529) error; then run the "
+             "`general-purpose` or a fork for this work (they run on your own model); research agents such as `Explore` "
+             "are fine for reading. `deep-haiku` is accepted only after `architect` or `implementer` failed in this "
+             "prompt with a rate-limit (429) or overloaded (529) error; then run the "
              "same brief with `deep-haiku` and tell the user the result came from the fallback. Subagents cannot see "
              "this conversation. Report subagent results honestly, including failures and test output. The user can "
              "override the router by starting a prompt with ::fast, ::standard or ::deep.")
     return "\n".join([head, body, rules])
 
 
-def emit_context(text):
-    common.emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}})
+def user_line(tier, decision, cfg, ms):
+    """The verdict line Claude Code shows the user, or None. Notifications stay quiet unless they unlock the fallback."""
+    if not cfg["ui"]["verdict_line"]:
+        return None
+    try:
+        if decision.get("source") == "notification":
+            if "now accepted" not in (decision.get("reason") or ""):
+                return None
+            return "%s router: fallback unlocked %s `deep-haiku` is accepted (an architect/implementer call hit " \
+                   "429/529)" % (ui.BOX_UNICODE["dot"], ui.BOX_UNICODE["sep"])
+        return ui.verdict_line(tier, decision, cfg, ms)
+    except Exception:
+        return None
+
+
+ROUTER_SOURCES = ("override", "sticky", "escalation", "slash-command", "notification", "rules", "none", "error")
+
+
+def error_kind(message):
+    """A short, prompt-free category for a judge error (the full text is logged only with log_judge_details)."""
+    m = str(message or "")
+    for prefix, kind in (("timed out", "timeout"), ("claude reported an error", "claude-error"),
+                         ("claude exited", "exit-code"), ("unusable judge output", "unusable-output"),
+                         ("could not start", "start-failed"), ("could not prepare", "prepare-failed")):
+        if m.startswith(prefix):
+            return kind
+    return "error"
+
+
+def log_record(cfg, session, tier, decision, prompt, ms):
+    """Decision log entry. By default it holds no text derived from the prompt: the reason written by a model
+    judge and raw error messages (which can quote judge output) are kept only with logging.log_judge_details."""
+    details = cfg["logging"]["log_judge_details"]
+    source = decision.get("source")
+    reason = decision.get("reason", "")
+    if not details and source not in ROUTER_SOURCES:
+        reason = "(judge reason not logged; set logging.log_judge_details to keep it)"
+    attempts = []
+    for a in decision.get("attempts", []):
+        a = dict(a)
+        if "error" in a:
+            a["error_kind"] = error_kind(a["error"])
+            if not details:
+                del a["error"]
+        attempts.append(a)
+    record = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "session": session, "tier": tier,
+        "judged_tier": decision["tier"], "source": source, "confidence": decision.get("confidence"),
+        "reason": reason, "attempts": attempts, "cost_usd": decision.get("cost_usd"), "ms": ms,
+        "judge_ran": any(isinstance(a, dict) and a.get("step") != "rules" for a in decision.get("attempts", [])),
+        "prompt_chars": len(prompt), "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16],
+    }
+    if cfg["logging"]["log_prompt_text"]:
+        record["prompt"] = prompt[:2000]
+    return record
+
+
+def emit_context(text, user_message=None):
+    """additionalContext goes to the model; systemMessage is shown to the user only."""
+    out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+    if user_message:
+        out["systemMessage"] = user_message
+    common.emit(out)
 
 
 def main():
@@ -364,64 +430,63 @@ def main():
     notification = is_notification(prompt) and prev.get("tier") in common.TIERS
     # Provisional state first: whatever happens below, the guard never enforces the previous
     # prompt's verdict or used-line count against this prompt. (A notification continues the
-    # current prompt, so its state is kept as it is.)
+    # current prompt, so its state is kept as it is.) Each new prompt gets a new generation number,
+    # so a slow update meant for an older prompt can never overwrite the state of a newer one.
+    generation = prev.get("generation", 0) + (0 if notification else 1)
     if not notification:
-        try:
-            common.write_state(session, {"tier": "standard", "main_lines_used": 0, "other_lines_used": 0,
-                                         "provisional": True, "reason": "router error before a verdict",
-                                         "updated": time.time()})
-        except OSError:
-            pass
+        def provisional(cur):
+            return {"tier": "standard", "main_lines_used": 0, "other_lines_used": 0, "provisional": True,
+                    "reason": "router error before a verdict", "updated": time.time(),
+                    "generation": max(generation, cur.get("generation", 0) + 1)}
+        generation = common.update_state(session, provisional)["generation"]
     try:
         cfg = common.load_config()
     except common.RouterError as exc:
         emit_context("[router] Routing is OFF for this prompt because the router configuration is invalid: %s. "
-                     "Tell the user." % exc)
+                     "Tell the user." % exc,
+                     "%s router: OFF for this prompt, the configuration is invalid (python install.py doctor)"
+                     % ui.BOX_UNICODE["dot"])
         return 0
     t0 = time.time()
     try:
         decision = decide(prompt, cwd, prev, cfg)
         tier = common.effective_tier(decision["tier"], cfg)
     except Exception as exc:
-        decision = {"tier": "standard", "source": "error", "reason": "router error: %s" % exc, "confidence": None,
+        decision = {"tier": "standard", "source": "error", "reason": "router error: %s" % exc.__class__.__name__,
+                    "confidence": None,
                     "attempts": [], "cost_usd": None}
         try:
             tier = common.effective_tier("standard", cfg)
         except common.RouterError:
             tier = "standard"
-    state = {
+    new_state = {
         "tier": tier, "judged_tier": decision["tier"], "source": decision.get("source"),
         "reason": decision.get("reason", ""), "confidence": decision.get("confidence"),
-        "main_lines_used": 0, "other_lines_used": 0, "updated": time.time(),
+        "main_lines_used": 0, "other_lines_used": 0, "updated": time.time(), "generation": generation,
         "prompt_id": data.get("prompt_id") if isinstance(data.get("prompt_id"), str) else None,
     }
-    if decision.get("source") == "notification" and notification:
-        state.update({k: prev[k] for k in ("judged_tier", "reason", "confidence", "main_lines_used",
-                                           "other_lines_used", "prompt_id", "pinned_calls", "throttled_calls")
-                      if k in prev})
-        state["source"] = prev.get("source", "notification")
-        tid = throttled_call_id(prompt, prev)
+
+    def commit(cur):
+        if cur.get("generation", 0) > generation:
+            return None  # a newer prompt owns the state now
+        if not (decision.get("source") == "notification" and notification):
+            return new_state
+        # A notification continues the current prompt: keep its verdict, counters and recorded calls,
+        # as they are NOW (a guard may have recorded a call since this hook started).
+        state = dict(cur, updated=time.time())
+        tid = throttled_call_id(prompt, cur)
+        if tid and tid not in cur.get("throttled_calls", []):
+            state["throttled_calls"] = (cur.get("throttled_calls", []) + [tid])[-common.MAX_TRACKED_CALLS:]
         if tid:
-            state["throttled_calls"] = (prev.get("throttled_calls", []) + [tid])[-common.MAX_TRACKED_CALLS:]
             decision["reason"] = ("background agent call %s failed with a rate-limit/overload error: `deep-haiku` "
                                   "is now accepted for this prompt" % tid)
-    try:
-        common.write_state(session, state)
-    except OSError:
-        pass
-    record = {
-        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "session": session, "tier": tier,
-        "judged_tier": decision["tier"], "source": decision.get("source"), "confidence": decision.get("confidence"),
-        "reason": decision.get("reason", ""), "attempts": decision.get("attempts", []),
-        "cost_usd": decision.get("cost_usd"), "ms": int((time.time() - t0) * 1000),
-        "prompt_chars": len(prompt), "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16],
-    }
-    if cfg["logging"]["log_prompt_text"]:
-        record["prompt"] = prompt[:2000]
-    common.append_log(cfg, record)
+        return state
+    common.update_state(session, commit)
+    ms = int((time.time() - t0) * 1000)
+    common.append_log(cfg, log_record(cfg, session, tier, decision, prompt, ms))
     if decision.get("source") not in ("override", "sticky", "escalation", "slash-command", "notification"):
         common.cleanup_old_state()
-    emit_context(directive(tier, decision, cfg))
+    emit_context(directive(tier, decision, cfg), user_line(tier, decision, cfg, ms))
     return 0
 
 

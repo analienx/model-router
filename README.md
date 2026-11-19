@@ -10,7 +10,7 @@
 
 [![Unit tests](https://img.shields.io/github/actions/workflow/status/analienx/model-router/ci.yml?branch=main&label=unit%20tests&style=flat-square)](https://github.com/analienx/model-router/actions/workflows/ci.yml)
 [![End-to-end](https://img.shields.io/github/actions/workflow/status/analienx/model-router/e2e.yml?branch=main&label=end-to-end%20%C2%B7%20real%20Claude%20Code&style=flat-square)](https://github.com/analienx/model-router/actions/workflows/e2e.yml)
-[![Release](https://img.shields.io/github/v/release/analienx/model-router?style=flat-square&color=6366f1)](https://github.com/analienx/model-router/releases/latest)
+[![Release](https://img.shields.io/github/v/release/analienx/model-router?style=flat-square&color=6366f1)](https://github.com/analienx/model-router/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 <br>
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-3776AB?style=flat-square)
@@ -56,7 +56,7 @@ Sonnet on your Claude subscription rates each new prompt FAST, STANDARD or DEEP.
 
 **Enforced, not suggested**
 
-A `PreToolUse` hook counts Haiku's edited lines per prompt and denies anything over the tier's budget. It also denies the wrong delegate and any `model` override on a pinned subagent.
+A `PreToolUse` hook counts Haiku's edited lines per prompt and denies anything over the tier's budget. It also denies the wrong delegate and any `model` override on a pinned subagent, and keeps every count correct when tool calls run in parallel.
 
 </td>
 <td width="33%" valign="top">
@@ -86,7 +86,7 @@ Plain Python 3.8+ (standard library only), plus Claude Code's own hooks and agen
 
 **Proven on every push**
 
-79 unit tests, and an end-to-end run of the **real Claude Code CLI** on all three operating systems against a local mock API. No model, account or network is needed.
+106 unit tests, and an end-to-end run of the **real Claude Code CLI** on all three operating systems against a local mock API. No model, account or network is needed. `install.py eval` measures routing quality on labeled prompts.
 
 </td>
 </tr>
@@ -111,6 +111,30 @@ Plain Python 3.8+ (standard library only), plus Claude Code's own hooks and agen
 - "yes" or "continue" keeps the current tier;
 - "still failing" or "try again" moves up one tier.
 
+### What you see
+
+`claude-router` opens with a banner of your routing (coloured on a colour terminal), and after every prompt Claude Code shows you a one-line verdict. That line is for you only; the model never sees it.
+
+```text
+╭────────────────────────────────────────────────────────────────────╮
+│ ◆ model-router 1.3.0          difficulty-based model routing       │
+├────────────────────────────────────────────────────────────────────┤
+│ FAST      → claude-haiku-5-5  Haiku handles it                     │
+│ STANDARD  → team-sonnet       implementer (Sonnet)                 │
+│ DEEP      → claude-opus-5-5   architect (Opus)                     │
+├────────────────────────────────────────────────────────────────────┤
+│ judge    subscription sonnet (max) → foundry sonnet (high) → rules │
+│ guard    Haiku edits ≤ 40 / 10 / 0 lines · retries 3               │
+│ foundry  contoso-ai · entra                                        │
+╰────────────────────────────────────────────────────────────────────╯
+  ::fast  ::standard  ::deep  choose a tier yourself · claude-router --router-dry-run
+
+◆ router: DEEP → architect (Opus) · judge subscription:sonnet 0.86 · 2.4s
+◆ router: FAST → Haiku handles it (edits ≤ 40 lines) · your ::fast override
+```
+
+`ui.banner` (`full`, `compact`, `off`) and `ui.verdict_line` turn these off ([guide, section 5.9](docs/SETUP.md#59-ui)). `NO_COLOR` is honoured, and consoles that can't print box drawing get plain ASCII.
+
 ### What the hooks say
 
 <img alt="Terminal illustration: for a DEEP prompt the judge hook adds the verdict to Haiku's context, and the guard denies Haiku's own 50-line Write and a hand-off to implementer, then allows architect." src="docs/assets/session.svg" width="100%">
@@ -123,7 +147,7 @@ Plain Python 3.8+ (standard library only), plus Claude Code's own hooks and agen
 
 ```powershell
 git clone https://github.com/analienx/model-router && cd model-router
-python -m unittest discover -s tests      # optional: 79 self-tests, no network
+python -m unittest discover -s tests      # optional: 106 self-tests, no network
 python install.py install                 # hooks + agents + launcher, for your user
 # edit ~/.claude-router/router.config.json: Foundry resource and deployment names
 python install.py doctor                  # checks everything, explains every problem
@@ -131,7 +155,7 @@ python install.py test-judge              # one real judge call per backend
 claude-router                             # after adding ~/.claude-router/bin to PATH
 ```
 
-**No git on the work machine?** Download `claude-model-router-<version>.zip` from the [latest release](https://github.com/analienx/model-router/releases/latest). The release also has `SETUP-offline.md`: the full guide plus the source of every file with SHA-256 checksums, for mail systems that block attachments.
+**No git on the work machine?** Download `claude-model-router-<version>.zip` from the [Releases page](https://github.com/analienx/model-router/releases). The release also has `SETUP-offline.md`: the full guide plus the source of every file with SHA-256 checksums, for mail systems that block attachments.
 
 The **[setup guide](docs/SETUP.md)** walks through every step on Windows, macOS and Linux: Azure roles, deployment names, `az login`, configuration examples, troubleshooting and uninstall.
 
@@ -144,7 +168,7 @@ Every push runs both workflows on GitHub's runners. The results, reports and raw
 
 | Workflow | Runs on | What it proves |
 |---|---|---|
-| [**Unit tests**](https://github.com/analienx/model-router/actions/workflows/ci.yml) | Linux, macOS, Windows · Python 3.8 to 3.14 | 79 tests of the hooks, judge chain, guard, launcher and installer, with a fake `claude`. They include 27 regression tests from a code review (24 of them fail on version 1.0.0) and 3 from the end-to-end runs (2 fail on 1.1.0, 1 on 1.2.0). |
+| [**Unit tests**](https://github.com/analienx/model-router/actions/workflows/ci.yml) | Linux, macOS, Windows · Python 3.8 to 3.14 | 106 tests of the hooks, judge chain, guard, launcher and installer, with a fake `claude`. They include 27 regression tests from the first code review (24 of them fail on version 1.0.0), 3 from the end-to-end runs, and 21 for the findings of a second, external review (1.3.0). |
 | [**End-to-end**](https://github.com/analienx/model-router/actions/workflows/e2e.yml) | Linux, macOS, Windows · Claude Code 2.1.327 | Installs the router into an empty home folder and runs the **real Claude Code CLI** through the `claude-router` launcher against a local mock of the Anthropic/Foundry API. |
 | [**End-to-end**](https://github.com/analienx/model-router/actions/workflows/e2e.yml), latest | Linux · newest Claude Code release | The same test, as an early warning when Claude Code changes. It also runs weekly. A failure here is reported but does not fail the workflow. |
 
@@ -155,19 +179,25 @@ What the end-to-end test checks. Every check must pass for the job to be green:
 | install | `install.py install` into an empty home folder writes the hooks to `~/.claude/settings.json` |
 | DEEP | The subscription judge runs with every credential stripped, fails cleanly (the runner has no login), and the chain moves on |
 | DEEP | The judge reaches the **Sonnet deployment**, with `judge_system.md` instead of Claude Code's system prompt and with no tools |
+| DEEP | The judge keeps its configured effort although the shell sets `CLAUDE_CODE_EFFORT_LEVEL=low` |
 | DEEP | The main session runs on the **Haiku deployment**, and the hook injects the **DEEP directive** |
 | DEEP | The guard **denies** Haiku's own 50-line `Write`, and the file is not created |
 | DEEP | The guard **denies** handing DEEP work to `implementer` |
 | DEEP | `architect` runs on the **Opus deployment** and is allowed its 200-line `Write` |
 | DEEP | The background-agent notification is **not re-judged** (exactly one judge call) |
 | FAST | A 5-line `Write` is allowed, and the next 100-line `Write` is **denied** (over budget) |
+| FAST | With your own `--settings {}`, requests still go to the **Haiku deployment name** |
+| FAST | The launcher prints its banner with all three deployments (the report shows it as printed on the runner) |
 | 429 fallback | Opus answers **HTTP 429**, and `deep-haiku` is allowed and does the work on the Haiku deployment |
+| 429 fallback | Retries stay within the launcher's limit although the shell sets `CLAUDE_CODE_MAX_RETRIES=20` and `CLAUDE_CODE_RETRY_WATCHDOG=1` |
+| named session | A main session started with `--agent implementer` still gets the **main session's** budget: its 100-line `Write` is denied |
+| parallel calls | Three `architect` calls in one turn all run, and the guard records **all three** (no lost updates) |
 | safety | Plain `claude` is untouched, and with the router code deleted Claude Code is **not blocked** |
 
-Each run's summary has the full report: 25 checks, with the hooks' output as evidence. The mock-API logs and captured hook inputs are under **Artifacts**. To run it yourself: `python tests/e2e/run_e2e.py` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+Each run's summary has the full report: 34 checks, with the hooks' output as evidence. The mock-API logs and captured hook inputs are under **Artifacts**. To run it yourself: `python tests/e2e/run_e2e.py` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 > [!NOTE]
-> **Not proven automatically:** a real Foundry resource, a real subscription judge call (CI runners have no login, so the test asserts that this step fails cleanly), and real interactive use. `doctor`, `test-judge` and your first session ([guide, section 6](docs/SETUP.md#6-verify-the-installation)) cover those on your machine.
+> **Not proven automatically:** a real Foundry resource, a real subscription judge call (CI runners have no login, so the test asserts that this step fails cleanly), real interactive use, and how well the judge routes *your* prompts: the mock scripts its verdicts. `doctor`, `test-judge` and your first session ([guide, section 6](docs/SETUP.md#6-verify-the-installation)) cover the first three on your machine, and `python install.py eval` measures routing quality on labeled prompts ([guide, section 9](docs/SETUP.md#9-tuning-and-calibration)).
 
 ## Configuration at a glance
 
@@ -202,6 +232,7 @@ All fields, with ready-made examples, are in [section 5 of the guide](docs/SETUP
 | `python install.py doctor` | Checks Python, config, Foundry auth, deployments, `claude`, hooks and agents, and explains every problem. |
 | `python install.py test-judge` | Calls each judge in the chain once and prints the verdict, latency and errors. |
 | `python install.py report --last 20` | Shows tier and source counts, judge latency, failures and recent decisions. |
+| `python install.py eval [--corpus FILE]` | Runs the judge over labeled prompts: accuracy, under- and over-routing, latency and cost. One real judge call per prompt. |
 | `claude-router --router-dry-run` | Prints the exact command and environment the launcher would use, with secrets masked. |
 | `python install.py uninstall [--purge]` | Removes only the router's own hooks and agents, and never code another scope still uses. |
 
@@ -234,7 +265,7 @@ The launcher caps Claude Code's retries, so a 429 surfaces sooner instead of aft
 <details>
 <summary><b>Can Haiku get around the guard?</b></summary>
 
-Not through Claude Code's edit tools (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) or the `Agent` tool: those are all checked. Commands run through Bash (`sed`, redirects) are **not** inspected. The router is a routing layer, not a sandbox; use Claude Code's permission settings to restrict Bash.
+Not through Claude Code's edit tools (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) or the `Agent` tool: those are all checked, also when Haiku runs as a named main session (`--agent`). Under STANDARD and DEEP, `general-purpose` and forks are refused because they run on Haiku; research agents such as `Explore` are allowed. Commands run through Bash (`sed`, redirects) are **not** inspected. The router is a routing layer, not a sandbox; use Claude Code's permission settings to restrict Bash.
 </details>
 
 <details>
@@ -246,7 +277,7 @@ The launcher targets Azure Foundry today. The hooks and agents are provider-neut
 <details>
 <summary><b>Where does my data go?</b></summary>
 
-The judge sends the new prompt, the folder name and, optionally, the git branch and the count of uncommitted files to Anthropic through your subscription. Everything else goes wherever your Claude Code session goes. By default, the decision log stores a hash of each prompt, not its text. See [section 2 of the guide](docs/SETUP.md#2-read-this-before-installing-where-your-data-goes) and [SECURITY.md](SECURITY.md).
+The judge sends the new prompt, the folder name, the previous verdict's tier and, optionally, the git branch and the count of uncommitted files to Anthropic through your subscription. Everything else goes wherever your Claude Code session goes. By default, the decision log stores a hash of each prompt and no text written by the judge. See [section 2 of the guide](docs/SETUP.md#2-read-this-before-installing-where-your-data-goes) and [SECURITY.md](SECURITY.md).
 </details>
 
 ## Limits
@@ -264,7 +295,7 @@ These are stated plainly; details are in [section 12 of the guide](docs/SETUP.md
 router/     judge_hook.py · guard_hook.py · launch.py · common.py · judge_system.md
 agents/     architect.md (Opus) · implementer.md (Sonnet) · deep-haiku.md (Haiku, max effort)
 install.py  install · doctor · test-judge · report · uninstall
-tests/      79 unit tests · e2e/ (mock API and a runner for the real Claude Code)
+tests/      106 unit tests · e2e/ (mock API and a runner for the real Claude Code) · eval/ (labeled prompts)
 docs/       SETUP.md (the full guide) · assets/ (README images)
 scripts/    build_bundle.py (offline zip) · build_assets.py (generates docs/assets)
 ```

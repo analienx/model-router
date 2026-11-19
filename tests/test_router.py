@@ -3,8 +3,10 @@
     python -m unittest discover -s tests -v
 
 No network, no real model calls: `claude` is replaced by tests/fake_claude.py.
-Tests named test_review_* are regressions for the code review findings (v1.1.0).
+Tests named test_review_* are regressions for the first code review (v1.1.0), test_e2e_* for problems found by
+the end-to-end runs, and test_review2_* for the second review (v1.3.0).
 """
+import io
 import json
 import os
 import shutil
@@ -24,8 +26,10 @@ sys.dont_write_bytecode = True
 import common  # noqa: E402
 import judge_hook  # noqa: E402
 import launch  # noqa: E402
+import ui  # noqa: E402
 
 BIG = "x\n" * 40
+MARKER_TEXT = "<!-- installed by claude-model-router -->"
 
 
 def _alive(pid):
@@ -91,10 +95,18 @@ class RouterTestCase(unittest.TestCase):
         return self.run_hook("judge_hook.py", {"session_id": session, "prompt": prompt, "cwd": str(self.tmp),
                                                "hook_event_name": "UserPromptSubmit"}, self.env(**env_extra))
 
-    def guard(self, tool, tool_input, session="s1", agent=None, transcript=None, **env_extra):
+    def guard(self, tool, tool_input, session="s1", agent=None, transcript=None, main_agent=None, tool_use_id=None,
+              **env_extra):
+        """agent = a subagent (Claude Code sends agent_id + agent_type); main_agent = a main session started with
+        --agent NAME (agent_type only, no agent_id)."""
         payload = {"session_id": session, "tool_name": tool, "tool_input": tool_input, "hook_event_name": "PreToolUse"}
         if agent:
             payload["agent_type"] = agent
+            payload["agent_id"] = "agent-" + agent
+        if main_agent:
+            payload["agent_type"] = main_agent
+        if tool_use_id:
+            payload["tool_use_id"] = tool_use_id
         if transcript:
             payload["transcript_path"] = str(transcript)
         return self.run_hook("guard_hook.py", payload, self.env(**env_extra))
@@ -412,6 +424,57 @@ class JudgeHookTests(RouterTestCase):
         with self.assertRaises(common.RouterError):
             common.load_config(self.home / "router.config.json")
 
+    def test_review2_next_judge_gets_the_previous_tier_not_its_reason(self):
+        self.set_state({"tier": "deep", "reason": "quotes the earlier prompt: secret-ABC", "generation": 3})
+        self.judge("please refactor the parser module", FAKE_CLAUDE_MODE="standard")
+        stdin = self.calls()[0]["stdin"]
+        self.assertIn("previous verdict in this session: deep", stdin)
+        self.assertNotIn("secret-ABC", stdin)
+        self.assertEqual(self.state()["generation"], 4)
+
+    def test_review2_default_log_keeps_no_judge_text(self):
+        self.judge("please refactor the parser module", FAKE_CLAUDE_MODE_SUBSCRIPTION="garbage",
+                   FAKE_CLAUDE_MODE_FOUNDRY="standard")
+        rec = json.loads((self.home / "logs" / "decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertNotIn("multi-file feature", json.dumps(rec), "a model judge's reason is prompt-derived")
+        self.assertNotIn("pretty hard", json.dumps(rec), "raw judge output in an error must not be logged")
+        self.assertEqual(rec["attempts"][0]["error_kind"], "unusable-output")
+        self.assertNotIn("error", rec["attempts"][0])
+        self.assertTrue(rec["judge_ran"])
+        self.config["logging"]["log_judge_details"] = True
+        self.write_config()
+        self.judge("please refactor the parser module again", FAKE_CLAUDE_MODE_SUBSCRIPTION="garbage",
+                   FAKE_CLAUDE_MODE_FOUNDRY="standard")
+        rec = json.loads((self.home / "logs" / "decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(rec["reason"], "multi-file feature")
+        self.assertIn("pretty hard", rec["attempts"][0]["error"])
+
+    def test_review2_inherited_effort_and_retry_variables_do_not_reach_the_judge(self):
+        self.judge("please refactor the parser module", FAKE_CLAUDE_MODE_SUBSCRIPTION="is_error",
+                   FAKE_CLAUDE_MODE_FOUNDRY="standard", CLAUDE_CODE_EFFORT_LEVEL="low",
+                   CLAUDE_CODE_RETRY_WATCHDOG="1", CLAUDE_CODE_MAX_RETRIES="20", CLAUDE_CODE_OAUTH_TOKEN="tok")
+        sub_call, foundry_call = self.calls()
+        for call in (sub_call, foundry_call):
+            self.assertNotIn("CLAUDE_CODE_EFFORT_LEVEL", call["env"])
+            self.assertNotIn("CLAUDE_CODE_RETRY_WATCHDOG", call["env"])
+            self.assertEqual(call["env"]["CLAUDE_CODE_MAX_RETRIES"], "1")
+        self.assertEqual(sub_call["args"][sub_call["args"].index("--effort") + 1], "max")
+        # documented policy: a subscription token is the subscription login, so it stays for that judge only
+        self.assertEqual(sub_call["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), "<set>")
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", foundry_call["env"])
+
+    def test_review2_successful_notification_never_marks_a_call_throttled(self):
+        self.judge("Change the storage schema and migrate old data", FAKE_CLAUDE_MODE="deep")
+        self.guard("Agent", {"subagent_type": "architect", "prompt": "design"}, tool_use_id="toolu_ARCH")
+        call = {"subagent_type": "deep-haiku", "prompt": "x"}
+        for status in ("completed", "running", None):
+            notif = ("<task-notification>\n<tool-use-id>toolu_ARCH</tool-use-id>\n%s<summary>Agent finished; it "
+                     "handled a rate limit (429) by waiting</summary>\n</task-notification>"
+                     % ("<status>%s</status>\n" % status if status else ""))
+            self.judge(notif, FAKE_CLAUDE_MODE="fail_if_called")
+            self.assertEqual(self.state().get("throttled_calls", []), [], status)
+            self.assertTrue(self.denied(self.guard("Agent", call)), status)
+
     def test_review_example_config_matches_defaults(self):
         example = json.loads((ROUTER / "router.config.example.json").read_text(encoding="utf-8"))
         example.pop("_readme", None)
@@ -644,6 +707,99 @@ class GuardHookTests(RouterTestCase):
         self.judge(notif % "API Error: Request rejected (429) rate_limit", FAKE_CLAUDE_MODE="fail_if_called")
         self.assertIsNone(self.guard("Agent", call))
 
+    def test_review2_older_prompts_and_successful_results_are_not_evidence(self):
+        self.set_tier("deep")
+        call = {"subagent_type": "deep-haiku", "prompt": "x"}
+        first = {"type": "user", "message": {"role": "user", "content": "redesign the export locking"}}
+        second = {"type": "user", "message": {"role": "user", "content": "now add a progress bar"}}
+        failed = self._notification("toolu_A", "API Error: Request rejected (429) rate_limit")
+        # the 429 belongs to the previous prompt: a new prompt with no pinned call of its own must not reuse it
+        tr = self._transcript(first, self._agent_call("toolu_A", "architect"), failed, second)
+        self.assertTrue(self.denied(self.guard("Agent", call, transcript=tr)))
+        # a successful notification that mentions rate limits is not a failure
+        ok = self._notification("toolu_A", "Done. Handled a rate limit by backing off.")
+        ok["message"]["content"] = ok["message"]["content"].replace("<status>failed</status>", "<status>completed</status>")
+        tr = self._transcript(first, self._agent_call("toolu_A", "architect"), ok)
+        self.assertTrue(self.denied(self.guard("Agent", call, transcript=tr)))
+        # a successful synchronous result that mentions 429 is not a failure either
+        good = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_A", "content": "Fixed the 429 handling in the client."}]}}
+        tr = self._transcript(first, self._agent_call("toolu_A", "architect"), good)
+        self.assertTrue(self.denied(self.guard("Agent", call, transcript=tr)))
+        # the real thing still works
+        tr = self._transcript(second, self._agent_call("toolu_B", "architect"),
+                              self._notification("toolu_B", "API Error: Request rejected (429) rate_limit"))
+        self.assertIsNone(self.guard("Agent", call, transcript=tr))
+
+    def _parallel_guards(self, payloads):
+        procs = [subprocess.Popen([sys.executable, str(ROUTER / "guard_hook.py")], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env()) for _ in payloads]
+        for proc, payload in zip(procs, payloads):
+            proc.stdin.write(json.dumps(payload).encode("utf-8"))
+            proc.stdin.close()
+        for proc in procs:
+            self.assertEqual(proc.wait(timeout=60), 0, proc.stderr.read())
+            proc.stdout.close()
+            proc.stderr.close()
+
+    def test_review2_parallel_hooks_keep_every_update(self):
+        self.set_state({"tier": "deep", "generation": 1})
+        ids = ["toolu_%02d" % i for i in range(8)]
+        self._parallel_guards([{"session_id": "s1", "tool_name": "Agent", "tool_use_id": i, "hook_event_name":
+                                "PreToolUse", "tool_input": {"subagent_type": "architect", "prompt": "x"}} for i in ids])
+        self.assertEqual(sorted(self.state()["pinned_calls"]), ids)
+        self.set_state({"tier": "fast", "generation": 2})
+        self._parallel_guards([{"session_id": "s1", "tool_name": "Write", "hook_event_name": "PreToolUse",
+                                "tool_input": {"content": "x\n" * 5}} for _ in range(8)])
+        self.assertEqual(self.state()["main_lines_used"], 40)
+
+    def test_review2_named_main_session_is_the_main_session(self):
+        # `claude-router --agent implementer` sends agent_type without agent_id: that is still the main session.
+        self.set_tier("fast")
+        out = self.guard("Write", {"content": "x\n" * 100}, main_agent="implementer")
+        self.assertTrue(self.denied(out))
+        self.assertIn("main-thread", self.reason(out))
+        self.set_tier("deep")
+        self.assertTrue(self.denied(self.guard("Agent", {"subagent_type": "implementer", "prompt": "x"},
+                                               main_agent="architect")))
+        # the real implementer subagent (agent_id present) is unlimited
+        self.assertIsNone(self.guard("Write", {"content": "x\n" * 100}, agent="implementer"))
+
+    def test_review2_delegate_policy_per_tier_and_caller(self):
+        def agent(sub, **kw):
+            inp = {"prompt": "x"}
+            if sub is not None:
+                inp["subagent_type"] = sub
+            return self.guard("Agent", inp, **kw)
+        for tier in ("standard", "deep"):
+            self.set_tier(tier)
+            self.assertTrue(self.denied(agent("general-purpose")), tier)
+            self.assertTrue(self.denied(agent(None)), tier)          # a fork / default agent
+            self.assertIsNone(agent("Explore"), tier)
+            self.assertIsNone(agent("architect"), tier)
+        self.set_tier("fast")
+        self.assertIsNone(agent("general-purpose"))
+        # from inside a subagent: deep-haiku still needs evidence; architect may hand work to implementer
+        self.set_tier("deep")
+        self.assertTrue(self.denied(agent("deep-haiku", agent="architect")))
+        self.assertIsNone(agent("implementer", agent="architect"))
+        self.assertTrue(self.denied(self.guard("Agent", {"subagent_type": "architect", "model": "haiku", "prompt": "x"},
+                                               agent="Explore")))
+
+    def test_review2_crlf_replace_all_and_notebook_insert_are_counted_like_claude_code(self):
+        self.set_tier("standard", used=5)
+        target = self.tmp / "crlf.py"
+        target.write_bytes(b"a = 1\r\nb = 2\r\n" * 3)
+        out = self.guard("Edit", {"file_path": str(target), "old_string": "a = 1\nb = 2", "new_string": "c = 1\nd = 2",
+                                  "replace_all": True})
+        self.assertTrue(self.denied(out), "3 matches x 2 lines = 6, plus 5 used > 10")
+        self.assertIn("of 6 lines", self.reason(out))
+        nb = self.tmp / "n.ipynb"
+        nb.write_text(json.dumps({"cells": [{"id": "c1", "source": ["a\n"] * 30}]}), encoding="utf-8")
+        self.assertIsNone(self.guard("NotebookEdit", {"notebook_path": str(nb), "cell_id": "c1", "edit_mode": "insert",
+                                                      "new_source": "x = 1\ny = 2\n"}))
+        self.assertEqual(self.state()["main_lines_used"], 7)
+
     def test_review_other_subagent_limit_is_cumulative(self):
         self.set_tier("fast")
         for _ in range(4):
@@ -714,6 +870,51 @@ class LauncherTests(RouterTestCase):
         self.assertNotIn("supersecretvalue", p.stdout + p.stderr)
         self.assertNotIn("sk-old-key", p.stdout + p.stderr)
         self.assertNotIn("keep-quiet", p.stdout, "inherited, unchanged variables must not be printed")
+
+    def test_review2_inherited_retry_variables_cannot_defeat_the_fallback(self):
+        cmd, env = launch.build_launch(self.cfg(), [], {"CLAUDE_CODE_RETRY_WATCHDOG": "1", "CLAUDE_CODE_MAX_RETRIES": "20",
+                                                        "CLAUDE_ROUTER_JUDGE": "1"})
+        self.assertNotIn("CLAUDE_CODE_RETRY_WATCHDOG", env)
+        self.assertEqual(env["CLAUDE_CODE_MAX_RETRIES"], "3")
+        self.assertNotIn("CLAUDE_ROUTER_JUDGE", env)
+
+    def test_review2_user_settings_are_merged_with_the_deployment_map(self):
+        self.config["tiers"]["deep"]["deployment"] = "team-opus-prod"
+        self.write_config()
+        mine = self.tmp / "mine.json"
+        mine.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]},
+                                    "modelOverrides": {"claude-opus-5-5": "wrong-dep", "other": "x"}}), encoding="utf-8")
+        for argv in (["--settings", "{}"], ["--settings={}"], ["--settings", str(mine), "--resume"]):
+            with mock.patch.dict(os.environ, {"CLAUDE_ROUTER_HOME": str(self.home)}):
+                cmd, env = launch.build_launch(self.cfg(), argv, {})
+            self.assertEqual(cmd.count("--settings"), 1, argv)
+            self.assertFalse(any(a.startswith("--settings=") for a in cmd), argv)
+            data = json.loads(Path(cmd[cmd.index("--settings") + 1]).read_text(encoding="utf-8"))
+            self.assertEqual(data["modelOverrides"]["claude-opus-5-5"], "team-opus-prod", argv)
+        self.assertEqual(data["permissions"], {"allow": ["Bash(ls)"]})
+        self.assertEqual(data["modelOverrides"]["other"], "x")
+        self.assertEqual(cmd[-1], "--resume")
+        with self.assertRaises(common.RouterError):
+            launch.build_launch(self.cfg(), ["--settings", str(self.tmp / "missing.json")], {})
+
+    def test_review2_two_tiers_cannot_map_one_model_id_to_two_deployments(self):
+        self.config["tiers"]["standard"] = {"model_id": "claude-opus-5-5", "deployment": "opus-cheap"}
+        self.config["tiers"]["deep"] = {"model_id": "claude-opus-5-5", "deployment": "opus-prod"}
+        self.write_config()
+        with self.assertRaises(common.RouterError) as ctx:
+            self.cfg()
+        self.assertIn("same model_id", str(ctx.exception))
+
+    def test_review2_launcher_warns_when_the_active_profile_has_no_hooks(self):
+        profile = self.tmp / "profile-a"
+        (profile).mkdir()
+        with mock.patch.dict(os.environ, {"CLAUDE_ROUTER_HOME": str(self.home)}):
+            self.assertFalse(launch.hooks_active({"CLAUDE_CONFIG_DIR": str(profile)}, str(self.tmp)))
+            hook = {"type": "command", "command": sys.executable, "args": [
+                "-c", "p='%s'" % (self.home / "router" / "judge_hook.py").as_posix()]}
+            (profile / "settings.json").write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [hook]}]}}),
+                                                   encoding="utf-8")
+            self.assertTrue(launch.hooks_active({"CLAUDE_CONFIG_DIR": str(profile)}, str(self.tmp)))
 
     def test_review_posix_launch_execs_instead_of_wrapping(self):
         seen = {}
@@ -810,15 +1011,51 @@ class InstallerTests(RouterTestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertFalse((self.home / "router").exists())
 
-    def test_user_agent_files_are_not_overwritten(self):
+    def test_review2_foreign_agent_stops_install_until_forced(self):
+        # Keeping a same-named agent of the user's while enabling routing would send routed work to the wrong agent.
         uh = self.tmp / "uh"
         (uh / ".claude" / "agents").mkdir(parents=True)
         mine = "---\nname: architect\ndescription: my own\n---\nmine\n"
         (uh / ".claude" / "agents" / "architect.md").write_text(mine, encoding="utf-8")
         p = self.run_install("install", home=uh)
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("--force-agents", p.stdout)
         self.assertEqual((uh / ".claude" / "agents" / "architect.md").read_text(encoding="utf-8"), mine)
-        self.assertIn("left unchanged", p.stdout)
+        self.assertFalse((uh / ".claude" / "settings.json").exists(), "nothing may change before the refusal")
+        p = self.run_install("install", "--force-agents", home=uh)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn(MARKER_TEXT, (uh / ".claude" / "agents" / "architect.md").read_text(encoding="utf-8"))
+        self.assertIn(mine, [b.read_text(encoding="utf-8") for b in (self.home / "backups").iterdir()])
+
+    def test_review2_doctor_checks_the_agents_claude_code_loads(self):
+        uh = self.tmp / "uh-doc"
+        self.assertEqual(self.run_install("install", home=uh).returncode, 0)
+        project = self.tmp / "proj-shadow"
+        (project / ".claude" / "agents").mkdir(parents=True)
+        (project / ".claude" / "agents" / "architect.md").write_text("---\nname: architect\n---\nmine\n",
+                                                                      encoding="utf-8")
+        p = self.run_install("doctor", "--project", str(project), home=uh)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("is not the router's agent", p.stdout)
+        p = self.run_install("doctor", home=uh)
+        self.assertIn("agent architect.md: ", p.stdout)
+
+    def test_review2_custom_claude_config_dir_is_the_profile_that_gets_the_hooks(self):
+        uh = self.tmp / "uh-cfgdir"
+        profile = self.tmp / "work-profile"
+        env_extra = {"CLAUDE_CONFIG_DIR": str(profile)}
+        p = subprocess.run([sys.executable, str(ROOT / "install.py"), "install"], capture_output=True, text=True,
+                           encoding="utf-8", timeout=120, env=dict(self.base_env, HOME=str(uh), USERPROFILE=str(uh),
+                                                                   **env_extra))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("judge_hook.py", (profile / "settings.json").read_text(encoding="utf-8"))
+        self.assertTrue((profile / "agents" / "architect.md").exists())
+        self.assertFalse((uh / ".claude" / "settings.json").exists())
+        p = subprocess.run([sys.executable, str(ROOT / "install.py"), "doctor"], capture_output=True, text=True,
+                           encoding="utf-8", timeout=120, env=dict(self.base_env, HOME=str(uh), USERPROFILE=str(uh),
+                                                                   **env_extra))
+        self.assertIn("router hooks installed", p.stdout)
+        self.assertIn("from CLAUDE_CONFIG_DIR", p.stdout)
 
     def test_doctor_flags_provider_env_in_settings(self):
         uh = self.tmp / "uh2"
@@ -920,6 +1157,70 @@ class InstallerTests(RouterTestCase):
         self.assertNotIn(b"\r\r", cmd)
         self.assertTrue(cmd.endswith(b"%*\r\n"))
 
+    def test_review2_project_in_a_git_subfolder_stays_out_of_git_and_scopes_are_separate(self):
+        if not shutil.which("git"):
+            self.skipTest("git not installed")
+        repo = self.tmp / "mono"
+        sub_project = repo / "services" / "api"
+        sub_project.mkdir(parents=True)
+        self.assertEqual(self.git(repo, "init", "-q").returncode, 0)
+        for project in (sub_project, repo):
+            p = self.run_install("install", "--scope", "project", "--project", str(project))
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        status = self.git(repo, "status", "--porcelain", "--untracked-files=all").stdout
+        self.assertEqual(status.strip(), "", "router files of a project in a subfolder must be ignored too")
+        # uninstalling the subfolder project keeps the root project's ignore block, and the reverse
+        self.assertEqual(self.run_install("uninstall", "--scope", "project", "--project", str(sub_project)).returncode, 0)
+        exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+        self.assertIn("claude-model-router: . ", exclude + " ")
+        self.assertNotIn("services/api", exclude)
+
+    def test_review2_parallel_installs_keep_every_registry_entry(self):
+        projects = [self.tmp / ("par%d" % i) for i in range(4)]
+        for pr in projects:
+            pr.mkdir()
+        uh = str(self.tmp / "uh-par")
+        env = dict(self.base_env, HOME=uh, USERPROFILE=uh)
+        procs = [subprocess.Popen([sys.executable, str(ROOT / "install.py"), "install", "--scope", "project",
+                                   "--project", str(pr)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+                 for pr in projects]
+        for proc in procs:
+            out = proc.communicate(timeout=240)[0]
+            self.assertEqual(proc.returncode, 0, out.decode("utf-8", "replace"))
+        reg = json.loads((self.home / "installs.json").read_text(encoding="utf-8"))["installs"]
+        self.assertEqual(sorted(Path(e["project"]).name for e in reg), ["par0", "par1", "par2", "par3"])
+
+    def test_review2_report_latency_counts_only_prompts_a_model_judged(self):
+        logs = self.home / "logs"
+        logs.mkdir()
+        rows = [{"ts": "t", "tier": "deep", "source": "subscription:sonnet", "ms": 4000, "judge_ran": True,
+                 "attempts": [{"step": "subscription:sonnet", "ok": True}]}]
+        rows += [{"ts": "t", "tier": "deep", "source": "notification", "ms": 3, "attempts": []}] * 5
+        rows += [{"ts": "t", "tier": "standard", "source": "rules", "ms": 1, "attempts": [{"step": "rules", "ok": True}]}]
+        (logs / "decisions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        p = subprocess.run([sys.executable, str(ROOT / "install.py"), "report"], capture_output=True, text=True,
+                           encoding="utf-8", timeout=60, env=self.base_env)
+        self.assertIn("median 4.0s", p.stdout)
+        self.assertIn("(1 prompts rated by a model judge)", p.stdout)
+
+    def test_review2_eval_reports_under_and_over_routing(self):
+        corpus = self.tmp / "corpus.jsonl"
+        corpus.write_text("# comment\n" + "".join(json.dumps(r) + "\n" for r in (
+            {"id": "a", "expected": "fast", "prompt": "where is main?"},
+            {"id": "b", "expected": "standard", "prompt": "add a csv flag"},
+            {"id": "c", "expected": "deep", "prompt": "redesign storage"})), encoding="utf-8")
+        p = subprocess.run([sys.executable, str(ROOT / "install.py"), "eval", "--corpus", str(corpus)],
+                           capture_output=True, text=True, encoding="utf-8", timeout=120,
+                           env=dict(self.base_env, FAKE_CLAUDE_MODE="standard"))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("accuracy:      33% (1/3)", p.stdout)
+        self.assertIn("under-routed:  1", p.stdout)
+        self.assertIn("over-routed:   1", p.stdout)
+        self.assertEqual(len(self.calls()), 3)
+        shipped = [json.loads(l) for l in (ROOT / "tests" / "eval" / "routing_corpus.jsonl").read_text(
+            encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
+        self.assertEqual(sorted({r["expected"] for r in shipped}), ["deep", "fast", "standard"])
+
     def test_review_wrong_shaped_registry_does_not_crash(self):
         uh = self.tmp / "uh-reg"
         for bad in ("[1,2]", '{"installs": "x"}', '{"installs": [5, {"settings": 3}]}', "not json"):
@@ -930,7 +1231,131 @@ class InstallerTests(RouterTestCase):
             self.assertEqual(p.returncode, 0, bad + p.stdout + p.stderr)
 
 
+class UiTests(RouterTestCase):
+    class Stream(io.StringIO):
+        def __init__(self, encoding="utf-8", tty=False):
+            io.StringIO.__init__(self)
+            self._enc, self._tty = encoding, tty
+
+        @property
+        def encoding(self):
+            return self._enc
+
+        def isatty(self):
+            return self._tty
+
+    def cfg(self):
+        self.config["tiers"]["standard"]["deployment"] = "team-sonnet"
+        self.write_config()
+        return common.load_config(self.home / "router.config.json")
+
+    def test_colour_follows_no_color_force_color_and_tty(self):
+        self.assertFalse(ui.Painter(self.Stream(tty=False), environ={}).color)
+        self.assertTrue(ui.Painter(self.Stream(), environ={"FORCE_COLOR": "1"}).color)
+        self.assertFalse(ui.Painter(self.Stream(), environ={"FORCE_COLOR": "1", "NO_COLOR": "1"}).color)
+        self.assertIn("\x1b[", ui.Painter(self.Stream(), environ={"FORCE_COLOR": "1"}).paint("x", "bold"))
+        self.assertEqual(ui.Painter(self.Stream(), environ={}).paint("x", "bold"), "x")
+
+    def test_unicode_only_when_the_stream_can_encode_it(self):
+        self.assertEqual(ui.Painter(self.Stream("utf-8"), environ={}).g["tl"], "\u256d")
+        self.assertEqual(ui.Painter(self.Stream("cp1252"), environ={}).g["tl"], "+")
+        self.assertEqual(ui.Painter(self.Stream("ascii"), environ={}).g["arrow"], "->")
+
+    def test_full_banner_is_an_aligned_box_with_every_deployment(self):
+        cfg = self.cfg()
+        for unicode in (True, False):
+            for color in (True, False):
+                painter = ui.Painter(self.Stream(), environ={}, color=color, unicode=unicode)
+                lines = ui.banner(cfg, "9.9.9", "test-resource", painter, columns=120)
+                frame = [l for l in lines if ui.ANSI_RE.sub("", l).startswith((painter.g["v"], painter.g["tl"],
+                                                                                painter.g["bl"], painter.g["ml"]))]
+                widths = {ui.visible_len(l) for l in frame}
+                self.assertEqual(len(widths), 1, (unicode, color, widths))
+                self.assertLessEqual(widths.pop(), 100)
+                text = ui.ANSI_RE.sub("", "\n".join(lines))
+                for needle in ("model-router", "9.9.9", "claude-haiku-5-5", "team-sonnet", "claude-opus-5-5",
+                               "architect (Opus)", "subscription sonnet (max)", "test-resource"):
+                    self.assertIn(needle, text)
+                self.assertEqual("\x1b" in "".join(lines), color)
+                if not unicode:
+                    "\n".join(lines).encode("ascii")
+
+    def test_compact_off_and_warnings(self):
+        cfg = self.cfg()
+        painter = ui.Painter(self.Stream(), environ={}, color=False, unicode=True)
+        compact = ui.banner(cfg, "9.9.9", "r", painter, mode="compact", warnings=["no hooks"])
+        self.assertEqual(len(compact), 2)
+        self.assertIn("team-sonnet", compact[0])
+        self.assertIn("no hooks", compact[1])
+        self.assertEqual(len(ui.banner(cfg, "9.9.9", "r", painter, columns=60)), 1, "narrow terminals get one line")
+        self.assertEqual(ui.banner(cfg, "9.9.9", "r", painter, mode="off", warnings=["w"]), ["! w"])
+        self.config["tiers"]["deep"]["deployment"] = None
+        self.write_config()
+        cfg = common.load_config(self.home / "router.config.json")
+        text = "\n".join(ui.banner(cfg, "9.9.9", "r", painter, columns=120))
+        self.assertIn("no deployment: uses STANDARD", text)
+
+    def test_judge_hook_shows_a_verdict_line_to_the_user_only(self):
+        out = self.judge("Change the storage schema and migrate old data", FAKE_CLAUDE_MODE="deep")
+        msg = out["systemMessage"]
+        self.assertIn("DEEP", msg)
+        self.assertIn("architect (Opus)", msg)
+        self.assertIn("judge subscription:sonnet 0.90", msg)
+        self.assertNotIn("\x1b", msg)
+        self.assertNotIn("router:", self.context(out).split("\n")[0][:9])
+        out = self.judge("::fast where is main?", FAKE_CLAUDE_MODE="fail_if_called")
+        self.assertIn("your ::fast override", out["systemMessage"])
+        out = self.judge("<task-notification>\n<status>completed</status>\n</task-notification>",
+                         FAKE_CLAUDE_MODE="fail_if_called")
+        self.assertNotIn("systemMessage", out, "routine notifications stay quiet")
+        self.config["ui"] = {"banner": "off", "verdict_line": False}
+        self.write_config()
+        out = self.judge("please refactor the parser module", FAKE_CLAUDE_MODE="standard")
+        self.assertNotIn("systemMessage", out)
+        self.assertIn("STANDARD", self.context(out))
+
+    def test_invalid_ui_settings_are_rejected(self):
+        for bad in ({"banner": "huge", "verdict_line": True}, {"banner": "full", "verdict_line": "yes"}):
+            self.config["ui"] = bad
+            self.write_config()
+            with self.assertRaises(common.RouterError):
+                common.load_config(self.home / "router.config.json")
+
+    def test_launcher_prints_the_banner_on_stderr_only(self):
+        p = subprocess.run([sys.executable, str(ROUTER / "launch.py"), "--router-dry-run"], capture_output=True,
+                           text=True, encoding="utf-8", timeout=60,
+                           env=dict(self.base_env, PYTHONIOENCODING="utf-8"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("model-router", p.stderr)
+        self.assertIn("\u256d", p.stderr)
+        self.assertIn("no router hooks", p.stderr)
+        # stdout carries only the dry-run report (its paths may contain "model-router"), never the banner
+        self.assertNotIn("difficulty-based model routing", p.stdout)
+        self.assertNotIn("\u256d", p.stdout)
+        self.assertNotIn("\x1b", p.stderr, "no colour when stderr is not a terminal")
+
+
+SOURCE_CHECKOUT = (ROOT / "docs" / "SETUP.md").is_file() and (ROOT / "scripts" / "build_bundle.py").is_file()
+
+
+@unittest.skipUnless(SOURCE_CHECKOUT, "needs the source checkout (the offline zip ships without the bundle builder)")
 class BundleTests(unittest.TestCase):
+    def test_review2_bundle_is_reproducible(self):
+        outs = []
+        try:
+            for _ in range(2):
+                out = Path(tempfile.mkdtemp(prefix="router-bundle-"))
+                outs.append(out)
+                p = subprocess.run([sys.executable, str(ROOT / "scripts" / "build_bundle.py"), "--out", str(out)],
+                                   capture_output=True, text=True, encoding="utf-8", timeout=120)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                time.sleep(2.1)  # zip timestamps have 2-second resolution: a later build must still be identical
+            a, b = (next(o.glob("*.zip")).read_bytes() for o in outs)
+            self.assertEqual(a, b)
+        finally:
+            for o in outs:
+                shutil.rmtree(str(o), ignore_errors=True)
+
     def test_offline_bundle_appendix_rebuilds_identical_files(self):
         import hashlib, re, zipfile
         out = Path(tempfile.mkdtemp(prefix="router-bundle-"))

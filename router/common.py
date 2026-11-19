@@ -3,6 +3,7 @@
 Standard library only. Works on Python 3.8+ on Windows, macOS and Linux.
 Nothing in here may crash a Claude Code session: callers catch RouterError.
 """
+import contextlib
 import copy
 import json
 import os
@@ -13,7 +14,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 TIERS = ("fast", "standard", "deep")
 TIER_RANK = {t: i for i, t in enumerate(TIERS)}
@@ -24,6 +25,9 @@ TIER_AGENT = {"fast": None, "standard": "implementer", "deep": "architect"}
 PINNED_AGENTS = ("implementer", "architect")              # `model` override on these is denied
 EDIT_AGENTS = ("implementer", "architect", "deep-haiku")  # may make large edits
 FALLBACK_AGENT = "deep-haiku"                             # only after a 429/529 from a pinned agent
+# Delegates that run on the caller's own (small) model. Not accepted for STANDARD or DEEP work from the main session.
+GENERIC_AGENTS = ("", "general-purpose", "fork")
+FAILED_STATUSES = ("failed", "error", "errored")         # <status> values of a background agent that failed
 THROTTLE_RE = re.compile(r"\b(429|529)\b|rate[ _-]?limit|overloaded", re.IGNORECASE)
 # Fields of a <task-notification> that are ids or file paths, never error text: a project folder such as
 # ".../issue-429/" or a random id must not look like a rate-limit error.
@@ -84,13 +88,18 @@ DEFAULT_CONFIG = {
     "logging": {
         "enabled": True,
         "log_prompt_text": False,
+        "log_judge_details": False,
+    },
+    "ui": {
+        "banner": "full",
+        "verdict_line": True,
     },
 }
 
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 VALID_BACKENDS = ("subscription", "foundry", "rules")
 VALID_ALIASES = ("haiku", "sonnet", "opus", "fable")
-SECTIONS = ("foundry", "tiers", "launcher", "judge", "guard", "logging")
+SECTIONS = ("foundry", "tiers", "launcher", "judge", "guard", "logging", "ui")
 
 
 class RouterError(Exception):
@@ -114,6 +123,13 @@ def code_dir():
 
 def judge_system_prompt_path():
     return code_dir() / "judge_system.md"
+
+
+def user_claude_dir(environ=None):
+    """The Claude Code profile folder Claude Code itself reads: $CLAUDE_CONFIG_DIR, else ~/.claude."""
+    environ = os.environ if environ is None else environ
+    env = environ.get("CLAUDE_CONFIG_DIR")
+    return Path(env).expanduser() if env else Path.home() / ".claude"
 
 
 # --------------------------------------------------------------------------- config
@@ -194,6 +210,15 @@ def validate_config(cfg):
             _require(re.fullmatch(r"\S+", dep), "tiers.%s.deployment must not contain spaces" % t)
             available += 1
     _require(available > 0, "at least one tier needs a Foundry deployment")
+    seen = {}
+    for t in TIERS:
+        spec = cfg["tiers"][t]
+        if spec.get("deployment"):
+            other = seen.setdefault(spec["model_id"], (t, spec["deployment"]))
+            _require(other[1] == spec["deployment"],
+                     "tiers.%s and tiers.%s use the same model_id %s with different deployments (%s, %s); Claude Code "
+                     "can map a model id to only one deployment" % (other[0], t, spec["model_id"], other[1],
+                                                                     spec["deployment"]))
 
     lau = cfg["launcher"]
     _require(is_int(lau.get("max_retries")) and 0 <= lau["max_retries"] <= 50,
@@ -237,6 +262,11 @@ def validate_config(cfg):
     lg = cfg["logging"]
     _require(isinstance(lg.get("enabled"), bool), "logging.enabled must be true or false")
     _require(isinstance(lg.get("log_prompt_text"), bool), "logging.log_prompt_text must be true or false")
+    _require(isinstance(lg.get("log_judge_details"), bool), "logging.log_judge_details must be true or false")
+
+    u = cfg["ui"]
+    _require(u.get("banner") in ("full", "compact", "off"), 'ui.banner must be "full", "compact" or "off"')
+    _require(isinstance(u.get("verdict_line"), bool), "ui.verdict_line must be true or false")
     return cfg
 
 
@@ -273,31 +303,46 @@ def bump_tier(tier):
 
 # --------------------------------------------------------------------------- environments
 
+# Environment policy for every Claude Code process the router starts (see SETUP.md, "Environment policy").
+#   removed for every child: provider, credential, model and session variables (ANTHROPIC_*, CLAUDE_CODE_USE_*,
+#     the names below) and retry overrides, so the router's provider, model mapping and retry limit always apply;
+#   removed for judge children only: effort overrides, because the judge's effort comes from judge.chain;
+#   CLAUDE_CODE_OAUTH_TOKEN (a subscription login in token form, from `claude setup-token`): kept for the
+#     subscription judge, which then uses it instead of the stored login; removed for every Foundry child;
+#   kept: everything else.
 _PROVIDER_EXACT = {
     "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
     "AWS_BEARER_TOKEN_BEDROCK", "ENABLE_PROMPT_CACHING_1H",
 }
-_SESSION_EXACT = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_ROUTER"}
+_SESSION_EXACT = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_ROUTER", "CLAUDE_ROUTER_JUDGE"}
+RETRY_VARS = {"CLAUDE_CODE_MAX_RETRIES", "CLAUDE_CODE_RETRY_WATCHDOG"}
+EFFORT_VARS = {"CLAUDE_CODE_EFFORT_LEVEL", "MAX_THINKING_TOKENS"}
 
 
 def _clean_env(base):
-    """Copy of `base` without provider, credential, model or session variables."""
+    """Copy of `base` without provider, credential, model, session or retry variables."""
     return {k: v for k, v in base.items()
             if not (k.startswith("ANTHROPIC_") or k.startswith("CLAUDE_CODE_USE_")
-                    or k in _PROVIDER_EXACT or k in _SESSION_EXACT)}
+                    or k in _PROVIDER_EXACT or k in _SESSION_EXACT or k in RETRY_VARS)}
+
+
+def judge_env(env):
+    """Finish a judge child's environment: no hooks recursion, one retry, no memory files, config effort only."""
+    for k in EFFORT_VARS:
+        env.pop(k, None)
+    env["CLAUDE_ROUTER_JUDGE"] = "1"
+    env["CLAUDE_CODE_MAX_RETRIES"] = "1"
+    env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
+    return env
 
 
 def subscription_env(base):
     """Environment for a `claude -p` call that must use the logged-in subscription.
 
-    Every provider/credential variable is removed, so the stored claude.ai login is the
-    only credential left. CLAUDE.md loading is switched off so no memory files leave the machine.
+    Every provider/API-key variable is removed, so the subscription login (stored, or CLAUDE_CODE_OAUTH_TOKEN)
+    is the only credential left. CLAUDE.md loading is switched off so no memory files leave the machine.
     """
-    env = _clean_env(base)
-    env["CLAUDE_ROUTER_JUDGE"] = "1"
-    env["CLAUDE_CODE_MAX_RETRIES"] = "1"
-    env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
-    return env
+    return judge_env(_clean_env(base))
 
 
 def model_overrides(cfg):
@@ -321,6 +366,7 @@ def foundry_env(cfg, base):
     if not f.get("resource") and not f.get("base_url"):
         raise RouterError("set foundry.resource (or foundry.base_url) in %s" % config_path())
     env = _clean_env(base)
+    env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)  # a subscription credential; Foundry sessions never need it
     env["CLAUDE_CODE_USE_FOUNDRY"] = "1"
     if f.get("base_url"):
         env["ANTHROPIC_FOUNDRY_BASE_URL"] = f["base_url"].rstrip("/")
@@ -418,7 +464,7 @@ def _sanitize_state(data):
     out = {}
     if data.get("tier") in TIERS:
         out["tier"] = data["tier"]
-    for key in ("main_lines_used", "other_lines_used"):
+    for key in ("main_lines_used", "other_lines_used", "generation"):
         v = data.get(key)
         out[key] = v if is_int(v) and v >= 0 else 0
     for key in ("reason", "source", "judged_tier", "prompt_id"):
@@ -445,6 +491,61 @@ def read_state(session_id):
 
 def write_state(session_id, data):
     atomic_write_text(state_path(session_id), json.dumps(data, ensure_ascii=True, indent=1))
+
+
+@contextlib.contextmanager
+def file_lock(path, timeout=5.0, stale_after=30.0):
+    """Cross-process lock (an O_EXCL lock file). Yields True if held, False after `timeout`.
+
+    Hooks must never hang a session, so a caller that cannot get the lock in time goes on without it.
+    A lock file older than `stale_after` seconds is left over from a killed process and is removed.
+    """
+    path = Path(path)
+    fd = None
+    deadline = time.time() + timeout
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - path.stat().st_mtime > stale_after:
+                        os.unlink(str(path))
+                        continue
+                except OSError:
+                    pass
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.005)
+    except OSError:
+        fd = None
+    try:
+        yield fd is not None
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                os.unlink(str(path))
+            except OSError:
+                pass
+
+
+def update_state(session_id, change):
+    """Read, change and write a session's state as one step, serialised across hook processes.
+
+    `change(state)` gets the current state and returns the new state, or None to leave it as it is.
+    Parallel hooks (several Agent calls in one turn, background subagents) no longer lose each other's updates.
+    """
+    with file_lock(state_path(session_id).with_suffix(".lock")):
+        new = change(read_state(session_id))
+        if new is not None:
+            try:
+                write_state(session_id, new)
+            except OSError:
+                pass
+        return new
 
 
 def cleanup_old_state(max_age_days=7):
