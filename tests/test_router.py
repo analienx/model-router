@@ -475,6 +475,37 @@ class JudgeHookTests(RouterTestCase):
             self.assertEqual(self.state().get("throttled_calls", []), [], status)
             self.assertTrue(self.denied(self.guard("Agent", call)), status)
 
+    def test_judge_model_can_be_a_tier_or_a_model_id(self):
+        self.config["judge"]["chain"] = [{"backend": "subscription", "model": "deep", "effort": "high", "timeout_s": 5},
+                                         {"backend": "foundry", "model": "claude-opus-5-5", "timeout_s": 5},
+                                         {"backend": "rules"}]
+        self.write_config()
+        self.judge("please refactor the parser module", FAKE_CLAUDE_MODE_SUBSCRIPTION="crash",
+                   FAKE_CLAUDE_MODE_FOUNDRY="standard")
+        sub_call, foundry_call = self.calls()
+        self.assertEqual(sub_call["args"][sub_call["args"].index("--model") + 1], "opus", "tier deep = the opus alias")
+        self.assertEqual(foundry_call["args"][foundry_call["args"].index("--model") + 1], "claude-opus-5-5")
+
+    def test_session_overlay_reaches_the_hooks(self):
+        out = self.judge("please refactor the parser module", FAKE_CLAUDE_MODE="fail_if_called",
+                         CLAUDE_ROUTER_OVERRIDES=json.dumps({"judge": {"chain": [{"backend": "rules"}]}}))
+        self.assertIn("source: rules", self.context(out))
+        self.assertEqual(self.calls(), [])
+        out = self.judge("please refactor the parser module", CLAUDE_ROUTER_OVERRIDES="{not json")
+        self.assertIn("Routing is OFF", self.context(out))
+
+    def test_parse_judge_spec(self):
+        self.assertEqual(common.parse_judge_spec("subscription:sonnet:max:120, foundry:deep, rules"), [
+            {"backend": "subscription", "model": "sonnet", "effort": "max", "timeout_s": 120},
+            {"backend": "foundry", "model": "deep", "timeout_s": 45}, {"backend": "rules"}])
+        self.assertEqual(common.parse_judge_spec("balanced"), common.DEFAULT_CONFIG["judge"]["chain"])
+        for bad in ("", "subscription", "openai:gpt", "foundry:opus:ultra", "foundry:opus:high:soon",
+                    "foundry:has space"):
+            with self.assertRaises(common.RouterError, msg=bad):
+                common.parse_judge_spec(bad)
+        for name, (_, spec) in common.JUDGE_PRESETS.items():
+            self.assertTrue(common.parse_judge_spec(spec), name)
+
     def test_review_example_config_matches_defaults(self):
         example = json.loads((ROUTER / "router.config.example.json").read_text(encoding="utf-8"))
         example.pop("_readme", None)
@@ -916,6 +947,38 @@ class LauncherTests(RouterTestCase):
                                                    encoding="utf-8")
             self.assertTrue(launch.hooks_active({"CLAUDE_CONFIG_DIR": str(profile)}, str(self.tmp)))
 
+    def test_session_flags_choose_judge_and_tiers_for_one_session(self):
+        rest, overlay = launch.session_overrides(["--router-judge", "foundry:opus:high", "-c",
+                                                  "--router-tier=deep=claude-fable-5-2@fable-prod", "--resume"])
+        self.assertEqual(rest, ["-c", "--resume"])
+        self.assertEqual(overlay["judge"]["chain"], [{"backend": "foundry", "model": "opus", "effort": "high",
+                                                      "timeout_s": 45}])
+        self.assertEqual(overlay["tiers"]["deep"], {"model_id": "claude-fable-5-2", "deployment": "fable-prod"})
+        self.assertEqual(launch.session_overrides(["--router-preset", "rules-only"])[1]["judge"]["chain"],
+                         [{"backend": "rules"}])
+        for bad in (["--router-preset", "nope"], ["--router-judge"], ["--router-tier", "huge=x"],
+                    ["--router-judge", "subscription:opus:ultra"]):
+            with self.assertRaises(common.RouterError):
+                launch.session_overrides(bad)
+        p = subprocess.run([sys.executable, str(ROUTER / "launch.py"), "--router-dry-run", "--router-preset",
+                            "rules-only", "--router-tier", "deep=claude-fable-5-2@fable-prod"],
+                           capture_output=True, text=True, encoding="utf-8", timeout=60,
+                           env=dict(self.base_env, PYTHONIOENCODING="utf-8"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("set     CLAUDE_ROUTER_OVERRIDES=", p.stdout)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=claude-fable-5-2", p.stdout)
+        self.assertIn("fable-prod", p.stderr, "the banner shows the session's tiers")
+        self.assertNotIn("--router-", p.stdout.split("environment")[0], "router flags never reach claude")
+
+    def test_main_session_effort_comes_from_the_fast_tier(self):
+        self.config["tiers"]["fast"]["effort"] = "low"
+        self.write_config()
+        cmd, _ = launch.build_launch(self.cfg(), [], {})
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "low")
+        cmd, _ = launch.build_launch(self.cfg(), ["--effort", "high"], {})
+        self.assertEqual(cmd.count("--effort"), 1, "the user's own --effort wins")
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "high")
+
     def test_review_posix_launch_execs_instead_of_wrapping(self):
         seen = {}
         rc = launch.run_claude(["claude", "--model", "haiku"], {"A": "1"}, windows=False,
@@ -1220,6 +1283,78 @@ class InstallerTests(RouterTestCase):
         shipped = [json.loads(l) for l in (ROOT / "tests" / "eval" / "routing_corpus.jsonl").read_text(
             encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
         self.assertEqual(sorted({r["expected"] for r in shipped}), ["deep", "fast", "standard"])
+
+    # --- 1.4.0: choosing the judge and the model of each tier ------------------------------------
+
+    def config_cmd(self, *args, home=None, stdin=None):
+        uh = str(home or self.tmp / "uh-cfg")
+        env = dict(self.base_env, HOME=uh, USERPROFILE=uh)
+        return subprocess.run([sys.executable, str(ROOT / "install.py"), "config"] + list(args), capture_output=True,
+                              text=True, encoding="utf-8", timeout=120, env=env, input=stdin)
+
+    def saved(self):
+        return json.loads((self.home / "router.config.json").read_text(encoding="utf-8"))
+
+    def test_config_commands_change_judge_tiers_and_agents(self):
+        uh = self.tmp / "uh-cfg"
+        self.assertEqual(self.run_install("install", home=uh).returncode, 0)
+        p = self.config_cmd("judge", "subscription:opus:high, rules")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.saved()["judge"]["chain"], [
+            {"backend": "subscription", "model": "opus", "effort": "high", "timeout_s": 90}, {"backend": "rules"}])
+        p = self.config_cmd("preset", "azure-only")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual([s["backend"] for s in self.saved()["judge"]["chain"]], ["foundry", "rules"])
+        self.assertIn("(preset: azure-only)", p.stdout)
+        p = self.config_cmd("tier", "deep", "--model", "claude-fable-5-2", "--deployment", "fable-prod",
+                            "--effort", "max")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        deep = self.saved()["tiers"]["deep"]
+        self.assertEqual((deep["model_id"], deep["deployment"], deep["effort"]), ("claude-fable-5-2", "fable-prod", "max"))
+        architect = (uh / ".claude" / "agents" / "architect.md").read_text(encoding="utf-8")
+        self.assertIn("\neffort: max\n", architect, "the agent file follows the tier's effort")
+        self.assertIn("claude-fable-5-2", p.stdout)
+        p = self.config_cmd("tier", "deep", "--effort", "default")
+        self.assertNotIn("effort:", (uh / ".claude" / "agents" / "architect.md").read_text(encoding="utf-8"))
+        p = self.config_cmd("set", "ui.banner", "compact")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.saved()["ui"]["banner"], "compact")
+        before = self.saved()
+        for bad in (("judge", "subscription:opus:ultra"), ("judge", "nonsense"), ("tier", "deep", "--deployment", "a b"),
+                    ("set", "ui.banner", "huge"), ("preset", "nope")):
+            p = self.config_cmd(*bad)
+            self.assertNotEqual(p.returncode, 0, bad)
+            self.assertEqual(self.saved(), before, "%s must leave the config untouched" % (bad,))
+        p = self.config_cmd("preset")
+        for name in common.JUDGE_PRESETS:
+            self.assertIn(name, p.stdout)
+        p = self.run_install("doctor", home=uh)
+        self.assertIn("agent architect.md: ", p.stdout, "doctor compares with the config-rendered agent")
+
+    def test_config_wizard_reads_answers(self):
+        uh = self.tmp / "uh-cfg"
+        self.assertEqual(self.run_install("install", home=uh).returncode, 0)
+        answers = "\n".join([
+            "contoso-ai", "api_key_env", "MY_KEY",                       # foundry
+            "claude-haiku-5-5", "", "low", "",                           # fast: keep deployment, effort low
+            "claude-sonnet-5-5", "team-sonnet", "",                      # standard
+            "claude-opus-5-5", "none", "",                               # deep: no deployment
+            "2",                                                         # judge preset 2 (azure-only)
+        ]) + "\n"
+        p = self.config_cmd("wizard", stdin=answers)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        cfg = self.saved()
+        self.assertEqual(cfg["foundry"]["resource"], "contoso-ai")
+        self.assertEqual(cfg["foundry"]["api_key_env"], "MY_KEY")
+        self.assertEqual(cfg["tiers"]["fast"]["effort"], "low")
+        self.assertEqual(cfg["tiers"]["standard"]["deployment"], "team-sonnet")
+        self.assertIsNone(cfg["tiers"]["deep"]["deployment"])
+        self.assertEqual([s["backend"] for s in cfg["judge"]["chain"]], ["foundry", "rules"])
+        self.assertIn("no deployment: uses STANDARD", p.stdout)
+        before = self.saved()
+        p = self.config_cmd("wizard", stdin="contoso\n")   # input ends early: nothing is saved
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(self.saved(), before)
 
     def test_review_wrong_shaped_registry_does_not_crash(self):
         uh = self.tmp / "uh-reg"

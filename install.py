@@ -6,6 +6,7 @@
     python install.py test-judge [--prompt TEXT] [--backend subscription|foundry|rules|all]
     python install.py report    [--last N]
     python install.py eval      [--corpus FILE] [--limit N]   (real judge calls: measures routing quality)
+    python install.py config    [show | judge SPEC | tier TIER ... | preset [NAME] | set KEY VALUE | wizard]
     python install.py uninstall [--scope user|project] [--project DIR] [--purge]
 
 Standard library only, Python 3.8+. See SETUP.md.
@@ -220,6 +221,53 @@ def find_router_hooks(settings):
                 if is_router_hook(h):
                     found.append((event, h))
     return found
+
+
+# --------------------------------------------------------------------------- agents from config
+
+AGENT_EFFORT = {"architect.md": ("deep", "effort"), "implementer.md": ("standard", "effort"),
+                "deep-haiku.md": ("fast", "fallback_effort")}
+
+
+def config_or_defaults():
+    try:
+        return common.load_config()
+    except common.RouterError as exc:
+        say("[warn] %s; using the default settings for the agents" % exc)
+        return _defaults()
+
+
+def _defaults():
+    cfg = copy.deepcopy(common.DEFAULT_CONFIG)
+    return cfg
+
+
+def render_agent(name, cfg):
+    """The agent file for `name` with the effort configured for its tier (no effort line = Claude Code default)."""
+    text = (ROOT / "agents" / name).read_text(encoding="utf-8")
+    tier, key = AGENT_EFFORT[name]
+    effort = cfg["tiers"][tier].get(key)
+    head, sep, body = text.partition("\n---\n")
+    lines = [l for l in head.split("\n") if not l.startswith("effort:")]
+    if effort:
+        lines.append("effort: %s" % effort)
+    return "\n".join(lines) + sep + body
+
+
+def sync_agents(cfg):
+    """Re-render the router's own agent files in every registered install. Returns the files rewritten."""
+    changed = []
+    dirs = {e["agents_dir"] for e in load_registry()}
+    for d in sorted(dirs):
+        for name in AGENT_FILES:
+            f = Path(d) / name
+            if not f.exists() or MARKER not in f.read_text(encoding="utf-8", errors="replace"):
+                continue
+            new = render_agent(name, cfg)
+            if f.read_text(encoding="utf-8", errors="replace") != new:
+                write_exact(f, new)
+                changed.append(f)
+    return changed
 
 
 # --------------------------------------------------------------------------- registry
@@ -441,8 +489,9 @@ def _install(args):
 
     agents_dir.mkdir(parents=True, exist_ok=True)
     ours = []
+    agent_cfg = config_or_defaults()
     for name in AGENT_FILES:
-        src = (ROOT / "agents" / name).read_text(encoding="utf-8")
+        src = render_agent(name, agent_cfg)
         dst = agents_dir / name
         if dst.exists():
             current = dst.read_text(encoding="utf-8", errors="replace")
@@ -689,8 +738,9 @@ def cmd_doctor(args):
     # The agent Claude Code loads: the project's .claude/agents wins over the profile's agents folder.
     project = Path(args.project).resolve() if args.project else Path.cwd().resolve()
     load_order = [project / ".claude" / "agents", profile / "agents"]
+    agent_cfg = cfg or _defaults()
     for name in AGENT_FILES:
-        shipped = (ROOT / "agents" / name).read_text(encoding="utf-8")
+        shipped = render_agent(name, agent_cfg)
         eff = next((d / name for d in load_order if (d / name).exists()), None)
         if eff is None:
             elsewhere = [d for d in (Path(e["agents_dir"]) for e in load_registry()) if (d / name).exists()]
@@ -705,8 +755,9 @@ def cmd_doctor(args):
             report("fail", "%s is not the router's agent, and Claude Code loads it for this folder: rename it or run "
                            "install --force-agents" % eff)
         elif text.replace("\r\n", "\n") != shipped:
-            report("warn", "%s differs from the agent shipped with version %s (edited, or an older install): "
-                           "run install again to update it" % (eff, common.VERSION))
+            report("warn", "%s differs from what version %s and your config produce (edited, an older install, or "
+                           "a config change): run `python install.py config sync` or install again"
+                           % (eff, common.VERSION))
         else:
             report("ok", "agent %s: %s" % (name, eff))
 
@@ -874,6 +925,201 @@ def cmd_eval(args):
     return 0
 
 
+# --------------------------------------------------------------------------- config command
+
+TIER_ROLE = {"fast": "main session", "standard": "implementer", "deep": "architect"}
+
+
+def _raw_config():
+    path = common.config_path()
+    if not path.exists():
+        raise common.RouterError("no config at %s - run: python install.py install" % path)
+    return path, load_json_file(path)
+
+
+def _effective(data):
+    cfg = copy.deepcopy(common.DEFAULT_CONFIG)
+    common._deep_merge(cfg, {k: v for k, v in copy.deepcopy(data).items() if not str(k).startswith("_")})
+    common.validate_config(cfg)
+    return cfg
+
+
+def _save_config(path, data):
+    """Validate the whole result first; nothing is written if any value is wrong. Then re-render the agents."""
+    cfg = _effective(data)
+    b = backup(path, "config")
+    common.atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    say("[ok] saved %s (previous version: %s)" % (path, b))
+    for f in sync_agents(cfg):
+        say("[ok] agent updated for the new settings: %s" % f)
+    return cfg
+
+
+def preset_of(chain):
+    for name, (_, spec) in common.JUDGE_PRESETS.items():
+        if common.parse_judge_spec(spec) == chain:
+            return name
+    return None
+
+
+def show_config(cfg):
+    import ui
+    p = ui.Painter(sys.stdout)
+    g = p.g
+    say("%s %s %s %s" % (p.paint(g["dot"], "bold", "accent"), p.paint("model-router", "bold"), common.VERSION,
+                         p.paint("%s %s" % (g["sep"], common.config_path()), "dim")))
+    say("")
+    rows = [("TIER", "MODEL", "DEPLOYMENT", "EFFORT", "DOES THE WORK")]
+    for t in common.TIERS:
+        s = cfg["tiers"][t]
+        role = TIER_ROLE[t]
+        if t == "fast":
+            role += "; deep-haiku fallback (effort %s)" % s.get("fallback_effort")
+        eff = common.effective_tier(t, cfg)
+        dep = s.get("deployment") or "-"
+        if eff != t:
+            role += " %s no deployment: uses %s" % (g["sep"], eff.upper())
+        rows.append((t.upper(), s.get("model_id") or "-", dep, s.get("effort") or "default", role))
+    widths = [max(len(r[i]) for r in rows) for i in range(4)]
+    for n, r in enumerate(rows):
+        cells = [r[i].ljust(widths[i]) for i in range(4)] + [r[4]]
+        line = "  ".join(cells)
+        if n == 0:
+            say("  " + p.paint(line, "dim"))
+        else:
+            say("  " + p.tier(common.TIERS[n - 1], cells[0]) + line[len(cells[0]):])
+    say("")
+    chain = cfg["judge"]["chain"]
+    name = preset_of(chain)
+    say("  %s  %s%s" % (p.paint("judge  ", "dim"), (" %s " % g["arrow"]).join(common.judge_spec_text([s]) for s in chain),
+                        p.paint("   (preset: %s)" % name if name else "   (custom)", "dim")))
+    f = cfg["foundry"]
+    say("  %s  %s %s %s" % (p.paint("foundry", "dim"), f.get("base_url") or f.get("resource") or "(not set)", g["sep"],
+                            f.get("auth")))
+    if os.environ.get(common.OVERRIDES_ENV):
+        say("  %s  %s" % (p.paint("session", "dim"), "overrides from %s: %s" % (common.OVERRIDES_ENV,
+                                                                            os.environ[common.OVERRIDES_ENV])))
+    say("")
+    say(p.paint("  change a tier:   python install.py config tier deep --model claude-opus-5-5 --deployment team-opus "
+                "--effort high", "dim"))
+    say(p.paint("  change the judge: python install.py config judge \"foundry:opus:high, rules\"   or   config preset "
+                "NAME", "dim"))
+    say(p.paint("  one session only: claude-router --router-judge ... / --router-preset ... / --router-tier deep=...",
+                "dim"))
+
+
+def _parse_value(text):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _wizard(data, ask):
+    """Interactive edit of the most common settings. `ask(question, default)` returns the answer."""
+    cfg = _effective(data)
+    f = data.setdefault("foundry", {})
+    res = ask("Foundry resource name (or a full https:// base URL)", cfg["foundry"].get("base_url")
+              or cfg["foundry"].get("resource"))
+    if res.startswith("http"):
+        f["base_url"], f["resource"] = res, ""
+    else:
+        f["resource"], f["base_url"] = res, ""
+    f["auth"] = ask("Foundry auth: entra (az login) or api_key_env", cfg["foundry"]["auth"])
+    if f["auth"] == "api_key_env":
+        f["api_key_env"] = ask("Name of the environment variable that holds the key", cfg["foundry"]["api_key_env"])
+    for t in common.TIERS:
+        cur = cfg["tiers"][t]
+        spec = data.setdefault("tiers", {}).setdefault(t, {})
+        say("")
+        say("%s tier (%s)" % (t.upper(), TIER_ROLE[t]))
+        spec["model_id"] = ask("  model id", cur.get("model_id"))
+        dep = ask("  Foundry deployment name (none = no deployment for this tier)", cur.get("deployment") or "none")
+        spec["deployment"] = None if dep.lower() in ("none", "-", "") else dep
+        eff = ask("  effort (low, medium, high, xhigh, max, default)", cur.get("effort") or "default")
+        spec["effort"] = None if eff == "default" else eff
+        if t == "fast":
+            spec["fallback_effort"] = ask("  effort for deep-haiku, the 429 fallback", cur.get("fallback_effort"))
+    say("")
+    say("Judge presets:")
+    names = list(common.JUDGE_PRESETS)
+    for i, n in enumerate(names, 1):
+        say("  %d. %-11s %s" % (i, n, common.JUDGE_PRESETS[n][0]))
+    current = preset_of(cfg["judge"]["chain"]) or common.judge_spec_text(cfg["judge"]["chain"])
+    ans = ask("Judge: a preset number or name, or a chain like \"foundry:opus:high, rules\"", current)
+    if ans.isdigit() and 1 <= int(ans) <= len(names):
+        ans = names[int(ans) - 1]
+    data.setdefault("judge", {})["chain"] = common.parse_judge_spec(ans)
+    return data
+
+
+def cmd_config(args):
+    action = args.action or "show"
+    if action == "show":
+        _, data = _raw_config()
+        show_config(_effective(data) if not os.environ.get(common.OVERRIDES_ENV) else common.load_config())
+        return 0
+    if action == "preset" and not args.values:
+        for name, (desc, spec) in common.JUDGE_PRESETS.items():
+            say("  %-11s %s\n              %s" % (name, desc, spec))
+        return 0
+    path, data = _raw_config()
+    if action in ("judge", "preset"):
+        if len(args.values) != 1:
+            raise common.RouterError('usage: config %s %s' % (action, "\"SPEC\"" if action == "judge" else "NAME"))
+        if action == "preset" and args.values[0] not in common.JUDGE_PRESETS:
+            raise common.RouterError("unknown preset %r; choose one of: %s" % (args.values[0],
+                                                                             ", ".join(common.JUDGE_PRESETS)))
+        data.setdefault("judge", {})["chain"] = common.parse_judge_spec(args.values[0])
+    elif action == "tier":
+        if len(args.values) != 1 or args.values[0] not in common.TIERS:
+            raise common.RouterError("usage: config tier fast|standard|deep [--model ID] [--deployment NAME|none] "
+                                     "[--effort LEVEL|default] [--fallback-effort LEVEL]")
+        tier = args.values[0]
+        spec = data.setdefault("tiers", {}).setdefault(tier, {})
+        if args.model:
+            spec["model_id"] = args.model
+        if args.deployment:
+            spec["deployment"] = None if args.deployment.lower() in ("none", "null", "-") else args.deployment
+        if args.effort:
+            spec["effort"] = None if args.effort == "default" else args.effort
+        if args.fallback_effort:
+            if tier != "fast":
+                raise common.RouterError("--fallback-effort belongs to the fast tier (deep-haiku runs on its model)")
+            spec["fallback_effort"] = args.fallback_effort
+        if not (args.model or args.deployment or args.effort or args.fallback_effort):
+            raise common.RouterError("nothing to change: give --model, --deployment, --effort or --fallback-effort")
+    elif action == "set":
+        if len(args.values) != 2:
+            raise common.RouterError("usage: config set KEY VALUE   (e.g. config set ui.banner compact)")
+        keys = args.values[0].split(".")
+        node = data
+        for k in keys[:-1]:
+            node = node.setdefault(k, {})
+            if not isinstance(node, dict):
+                raise common.RouterError("%s is not a section" % k)
+        node[keys[-1]] = _parse_value(args.values[1])
+    elif action == "wizard":
+        def ask(question, default):
+            try:
+                ans = input("%s [%s]: " % (question, default if default is not None else ""))
+            except EOFError:
+                raise common.RouterError("wizard cancelled: nothing was changed")
+            return ans.strip() or (str(default) if default is not None else "")
+        data = _wizard(data, ask)
+    elif action == "sync":
+        cfg = common.load_config()
+        changed = sync_agents(cfg)
+        say("[ok] agents match the config" if not changed else "[ok] updated %d agent file(s)" % len(changed))
+        return 0
+    else:
+        raise common.RouterError("unknown config action %r" % action)
+    cfg = _save_config(path, data)
+    say("")
+    show_config(cfg)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="claude-model-router installer and tools (v%s)" % common.VERSION)
     sub = ap.add_subparsers(dest="cmd")
@@ -896,12 +1142,19 @@ def main(argv=None):
     p = sub.add_parser("eval")
     p.add_argument("--corpus", default=str(DEFAULT_CORPUS))
     p.add_argument("--limit", type=int, default=0)
+    p = sub.add_parser("config", help="show or change the judge and the model of each tier")
+    p.add_argument("action", nargs="?", choices=("show", "judge", "tier", "preset", "set", "wizard", "sync"))
+    p.add_argument("values", nargs="*")
+    p.add_argument("--model")
+    p.add_argument("--deployment")
+    p.add_argument("--effort", choices=common.VALID_EFFORTS + ("default",))
+    p.add_argument("--fallback-effort", choices=common.VALID_EFFORTS)
     args = ap.parse_args(argv)
     if not args.cmd:
         ap.print_help()
         return 2
     handler = {"install": cmd_install, "uninstall": cmd_uninstall, "doctor": cmd_doctor,
-               "test-judge": cmd_test_judge, "report": cmd_report, "eval": cmd_eval}[args.cmd]
+               "test-judge": cmd_test_judge, "report": cmd_report, "eval": cmd_eval, "config": cmd_config}[args.cmd]
     try:
         return handler(args)
     except common.RouterError as exc:

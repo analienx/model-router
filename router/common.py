@@ -14,7 +14,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 TIERS = ("fast", "standard", "deep")
 TIER_RANK = {t: i for i, t in enumerate(TIERS)}
@@ -59,9 +59,12 @@ DEFAULT_CONFIG = {
         "prompt_caching_1h": False,
     },
     "tiers": {
-        "fast": {"model_id": "claude-haiku-5-5", "deployment": "claude-haiku-5-5"},
-        "standard": {"model_id": "claude-sonnet-5-5", "deployment": "claude-sonnet-5-5"},
-        "deep": {"model_id": "claude-opus-5-5", "deployment": "claude-opus-5-5"},
+        # effort: fast = the main session (claude --effort; null = Claude Code's default), standard = implementer,
+        # deep = architect. fallback_effort = deep-haiku, the 429/529 stand-in that runs on the fast tier's model.
+        "fast": {"model_id": "claude-haiku-5-5", "deployment": "claude-haiku-5-5", "effort": None,
+                 "fallback_effort": "max"},
+        "standard": {"model_id": "claude-sonnet-5-5", "deployment": "claude-sonnet-5-5", "effort": "medium"},
+        "deep": {"model_id": "claude-opus-5-5", "deployment": "claude-opus-5-5", "effort": "high"},
     },
     "launcher": {
         "max_retries": 3,
@@ -99,6 +102,21 @@ DEFAULT_CONFIG = {
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 VALID_BACKENDS = ("subscription", "foundry", "rules")
 VALID_ALIASES = ("haiku", "sonnet", "opus", "fable")
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\-\[\]]*")
+OVERRIDES_ENV = "CLAUDE_ROUTER_OVERRIDES"   # per-session config overlay set by `claude-router --router-...`
+
+# Ready-made judge chains for `install.py config preset NAME` and `claude-router --router-preset NAME`.
+JUDGE_PRESETS = {
+    "balanced": ("Sonnet on your subscription, then Sonnet on Foundry, then rules (the default)",
+                 "subscription:sonnet:max:90, foundry:sonnet:high:45, rules"),
+    "azure-only": ("Nothing goes to the subscription: Sonnet on Foundry, then rules",
+                   "foundry:sonnet:high:45, rules"),
+    "opus-judge": ("Opus on your subscription, then Opus on Foundry, then rules (strongest, slowest)",
+                   "subscription:opus:high:120, foundry:opus:high:60, rules"),
+    "quick": ("Haiku on your subscription, then rules (fastest, weakest judge)",
+              "subscription:haiku:low:30, rules"),
+    "rules-only": ("No model judge: keyword rules only (no network, no cost)", "rules"),
+}
 SECTIONS = ("foundry", "tiers", "launcher", "judge", "guard", "logging", "ui")
 
 
@@ -163,8 +181,92 @@ def load_config(path=None):
             raise RouterError("%s must contain a JSON object" % p)
         data = {k: v for k, v in data.items() if not str(k).startswith("_")}
         _deep_merge(cfg, data)
+    overlay = os.environ.get(OVERRIDES_ENV)
+    if overlay:
+        try:
+            extra = json.loads(overlay)
+        except ValueError as exc:
+            raise RouterError("%s is not valid JSON: %s" % (OVERRIDES_ENV, exc))
+        if not isinstance(extra, dict):
+            raise RouterError("%s must be a JSON object" % OVERRIDES_ENV)
+        _deep_merge(cfg, extra)
     validate_config(cfg)
     return cfg
+
+
+# --------------------------------------------------------------------------- selection helpers
+
+def parse_judge_spec(spec):
+    """'subscription:opus:high:90, foundry:sonnet, rules' (or a preset name) -> a judge.chain list.
+
+    Each step is backend:model[:effort[:timeout_s]]. model is an alias (haiku, sonnet, opus, fable), a tier
+    (fast, standard, deep: that tier's model) or a full model id. "rules" is the keyword-rules step.
+    """
+    if not isinstance(spec, str) or not spec.strip():
+        raise RouterError("empty judge specification")
+    if spec.strip() in JUDGE_PRESETS:
+        spec = JUDGE_PRESETS[spec.strip()][1]
+    chain = []
+    for part in [p.strip() for p in spec.split(",") if p.strip()]:
+        bits = part.split(":")
+        backend = bits[0].strip().lower()
+        if backend == "rules":
+            chain.append({"backend": "rules"})
+            continue
+        if backend not in ("subscription", "foundry") or len(bits) < 2 or not bits[1]:
+            raise RouterError("judge step %r: use backend:model[:effort[:timeout]], backend subscription or "
+                              "foundry, or the word rules" % part)
+        step = {"backend": backend, "model": bits[1].strip()}
+        if len(bits) > 2 and bits[2].strip():
+            step["effort"] = bits[2].strip().lower()
+        try:
+            step["timeout_s"] = int(bits[3]) if len(bits) > 3 and bits[3].strip() else \
+                (90 if backend == "subscription" else 45)
+        except ValueError:
+            raise RouterError("judge step %r: timeout must be a whole number of seconds" % part)
+        if len(bits) > 4:
+            raise RouterError("judge step %r has too many parts" % part)
+        chain.append(step)
+    trial = copy.deepcopy(DEFAULT_CONFIG)
+    trial["judge"]["chain"] = chain
+    validate_config(dict(trial, foundry=dict(trial["foundry"], resource="x")))
+    return chain
+
+
+def judge_spec_text(chain):
+    out = []
+    for s in chain:
+        if s["backend"] == "rules":
+            out.append("rules")
+        else:
+            out.append(":".join([s["backend"], s["model"]] + ([s["effort"]] if s.get("effort") else [])
+                                + ([str(s["timeout_s"])] if s.get("timeout_s") is not None else [])))
+    return ", ".join(out)
+
+
+def parse_tier_spec(spec):
+    """'deep=claude-opus-5-5@team-opus' or 'deep=@team-opus' or 'deep=claude-fable-5-2' -> (tier, changes)."""
+    if not isinstance(spec, str) or "=" not in spec:
+        raise RouterError("tier override %r: use TIER=MODEL_ID[@DEPLOYMENT] (TIER is fast, standard or deep)" % spec)
+    tier, value = [x.strip() for x in spec.split("=", 1)]
+    if tier not in TIERS:
+        raise RouterError("tier override %r: unknown tier %r (use fast, standard or deep)" % (spec, tier))
+    model, _, dep = value.partition("@")
+    changes = {}
+    if model:
+        changes["model_id"] = model
+    if dep:
+        changes["deployment"] = None if dep.lower() in ("none", "null", "-") else dep
+    elif model:
+        changes["deployment"] = model  # same name as the model id unless given
+    if not changes:
+        raise RouterError("tier override %r sets nothing" % spec)
+    return tier, changes
+
+
+def judge_model_arg(model):
+    """What to pass to `claude --model` for a judge step: a tier name becomes that tier's alias."""
+    return TIER_ALIAS.get(model, model)
 
 
 def _require(cond, msg):
@@ -204,6 +306,11 @@ def validate_config(cfg):
         _require(isinstance(spec, dict), "tiers.%s must be an object" % t)
         dep, mid = spec.get("deployment"), spec.get("model_id")
         _require(dep is None or isinstance(dep, str), "tiers.%s.deployment must be a string or null" % t)
+        _require(spec.get("effort") in (None,) + VALID_EFFORTS,
+                 "tiers.%s.effort must be null or one of %s" % (t, ", ".join(VALID_EFFORTS)))
+        if t == "fast":
+            _require(spec.get("fallback_effort") in VALID_EFFORTS,
+                     "tiers.fast.fallback_effort must be one of %s" % ", ".join(VALID_EFFORTS))
         if dep:
             _require(isinstance(mid, str) and re.fullmatch(r"\S+", mid),
                      "tiers.%s.model_id is required (no spaces) when a deployment is set" % t)
@@ -234,8 +341,10 @@ def validate_config(cfg):
         b = step.get("backend")
         _require(b in VALID_BACKENDS, "judge.chain[%d].backend must be one of %s" % (i, ", ".join(VALID_BACKENDS)))
         if b != "rules":
-            _require(step.get("model") in VALID_ALIASES,
-                     "judge.chain[%d].model must be one of %s" % (i, ", ".join(VALID_ALIASES)))
+            m = step.get("model")
+            _require(isinstance(m, str) and (m in VALID_ALIASES or m in TIERS or MODEL_RE.fullmatch(m)),
+                     "judge.chain[%d].model must be an alias (%s), a tier (%s) or a model id"
+                     % (i, ", ".join(VALID_ALIASES), ", ".join(TIERS)))
             _require(step.get("effort") in (None,) + VALID_EFFORTS,
                      "judge.chain[%d].effort must be one of %s" % (i, ", ".join(VALID_EFFORTS)))
             ts = step.get("timeout_s", 60)

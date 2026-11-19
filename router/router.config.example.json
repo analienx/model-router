@@ -9,9 +9,9 @@
     "prompt_caching_1h": false
   },
   "tiers": {
-    "fast":     { "model_id": "claude-haiku-5-5",  "deployment": "claude-haiku-5-5" },
-    "standard": { "model_id": "claude-sonnet-5-5", "deployment": "claude-sonnet-5-5" },
-    "deep":     { "model_id": "claude-opus-5-5",   "deployment": "claude-opus-5-5" }
+    "fast":     { "model_id": "claude-haiku-5-5",  "deployment": "claude-haiku-5-5",  "effort": null, "fallback_effort": "max" },
+    "standard": { "model_id": "claude-sonnet-5-5", "deployment": "claude-sonnet-5-5", "effort": "medium" },
+    "deep":     { "model_id": "claude-opus-5-5",   "deployment": "claude-opus-5-5",   "effort": "high" }
   },
   "launcher": {
     "max_retries": 3,

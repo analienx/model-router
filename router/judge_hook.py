@@ -191,7 +191,7 @@ def call_claude(step, payload, cfg, environ=None):
         settings = common.judge_settings_file(cfg, backend)
         cmd = common.resolve_claude_cmd(cfg) + [
             "-p", JUDGE_INSTRUCTION,
-            "--model", step["model"],
+            "--model", common.judge_model_arg(step["model"]),
             "--output-format", "json",
             "--max-turns", "1",
             "--no-session-persistence",
