@@ -5,6 +5,7 @@
     python install.py doctor    [--project DIR]
     python install.py test-judge [--prompt TEXT] [--backend subscription|foundry|rules|all]
     python install.py report    [--last N]
+    python install.py eval      [--corpus FILE] [--limit N]   (real judge calls: measures routing quality)
     python install.py uninstall [--scope user|project] [--project DIR] [--purge]
 
 Standard library only, Python 3.8+. See SETUP.md.
@@ -33,8 +34,11 @@ AGENT_FILES = ["architect.md", "implementer.md", "deep-haiku.md"]
 MARKER = "<!-- installed by claude-model-router -->"
 HOOK_SCRIPTS = ("judge_hook.py", "guard_hook.py")
 GUARD_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Agent|Task"
-EXCLUDE_START = "# >>> claude-model-router (personal files, not committed) >>>"
+EXCLUDE_START = "# >>> claude-model-router (personal files, not committed) >>>"   # 1.2 and older, project at the root
 EXCLUDE_END = "# <<< claude-model-router <<<"
+EXCLUDE_START_KEYED = "# >>> claude-model-router: %s >>>"
+EXCLUDE_END_KEYED = "# <<< claude-model-router: %s <<<"
+DEFAULT_CORPUS = ROOT / "tests" / "eval" / "routing_corpus.jsonl"
 IS_WINDOWS = os.name == "nt"
 
 
@@ -53,7 +57,8 @@ def write_exact(path, text):
 
 
 def claude_dir(scope, project):
-    return (Path(project).resolve() / ".claude") if scope == "project" else (Path.home() / ".claude")
+    """Project: <project>/.claude. User: the profile Claude Code reads ($CLAUDE_CONFIG_DIR, else ~/.claude)."""
+    return (Path(project).resolve() / ".claude") if scope == "project" else common.user_claude_dir()
 
 
 def settings_file(scope, project):
@@ -228,6 +233,21 @@ def save_registry(entries):
     common.atomic_write_text(registry_path(), json.dumps({"installs": entries}, indent=2) + "\n")
 
 
+class install_lock(object):
+    """One install/uninstall at a time: the registry, the shared code and the settings files change together."""
+
+    def __enter__(self):
+        self._cm = common.file_lock(common.router_home() / "installs.lock", timeout=120, stale_after=900)
+        if not self._cm.__enter__():
+            self._cm.__exit__(None, None, None)
+            raise common.RouterError("another install or uninstall is running (lock %s); try again when it has "
+                                     "finished" % (common.router_home() / "installs.lock"))
+        return self
+
+    def __exit__(self, *exc):
+        return self._cm.__exit__(*exc)
+
+
 def entry_for(scope, project):
     return {"scope": scope, "settings": str(settings_file(scope, project)),
             "agents_dir": str(claude_dir(scope, project) / "agents"),
@@ -243,53 +263,83 @@ def settings_still_hooked(path):
 
 # --------------------------------------------------------------------------- git exclude (project scope)
 
-def git_exclude_path(project):
+def _git(project, *args):
     try:
-        p = subprocess.run(["git", "-C", str(project), "rev-parse", "--git-path", "info/exclude"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+        p = subprocess.run(["git", "-C", str(project)] + list(args), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=15)
     except (OSError, subprocess.SubprocessError):
         return None
-    if p.returncode != 0 or not p.stdout.strip():
+    out = p.stdout.strip()
+    return out if p.returncode == 0 and out else None
+
+
+def git_exclude_path(project):
+    out = _git(project, "rev-parse", "--git-path", "info/exclude")
+    if out is None:
         return None
-    path = Path(p.stdout.strip())
+    path = Path(out)
     return path if path.is_absolute() else Path(project) / path
 
 
-def _strip_block(text):
+def exclude_key(project):
+    """The project folder relative to its git root ("." for the root), or None outside git."""
+    top = _git(project, "rev-parse", "--show-toplevel")
+    if top is None:
+        return None
+    proj, root = Path(project).resolve(), Path(top).resolve()
+    try:
+        rel = proj.relative_to(root).as_posix()
+    except ValueError:
+        rel = Path(os.path.relpath(os.path.normcase(str(proj)), os.path.normcase(str(root)))).as_posix()
+    return rel or "."
+
+
+def exclude_entries(key, names):
+    """Patterns anchored at the git root, so a project in a subfolder is covered too."""
+    prefix = "" if key == "." else "/" + key
+    return ["%s/%s" % (prefix, n) for n in names]
+
+
+def _strip_block(text, key):
+    """Lines of `text` without this project's block (and without the unkeyed 1.2 block when key is ".")."""
+    starts = {EXCLUDE_START_KEYED % key} | ({EXCLUDE_START} if key == "." else set())
+    ends = {EXCLUDE_END_KEYED % key} | ({EXCLUDE_END} if key == "." else set())
     out, skipping = [], False
     for line in text.splitlines():
-        if line.strip() == EXCLUDE_START:
+        s = line.strip()
+        if not skipping and s in starts:
             skipping = True
             continue
-        if line.strip() == EXCLUDE_END:
-            skipping = False
+        if skipping:
+            if s in ends:
+                skipping = False
             continue
-        if not skipping:
-            out.append(line)
+        out.append(line)
     return out
 
 
-def set_git_exclude(project, entries):
-    path = git_exclude_path(project)
-    if path is None:
+def set_git_exclude(project, names):
+    path, key = git_exclude_path(project), exclude_key(project)
+    if path is None or key is None:
         return None
     text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
-    lines = _strip_block(text)
+    lines = _strip_block(text, key)
     while lines and not lines[-1].strip():
         lines.pop()
-    lines += ([""] if lines else []) + [EXCLUDE_START] + entries + [EXCLUDE_END]
+    lines += ([""] if lines else []) + [EXCLUDE_START_KEYED % key] + exclude_entries(key, names) + \
+        [EXCLUDE_END_KEYED % key]
     write_exact(path, "\n".join(lines) + "\n")
     return path
 
 
 def remove_git_exclude(project):
-    path = git_exclude_path(project)
-    if path is None or not path.exists():
+    path, key = git_exclude_path(project), exclude_key(project)
+    if path is None or key is None or not path.exists():
         return None
     text = path.read_text(encoding="utf-8", errors="replace")
-    if EXCLUDE_START not in text:
+    lines = _strip_block(text, key)
+    if lines == text.splitlines():
         return None
-    lines = _strip_block(text)
     while lines and not lines[-1].strip():
         lines.pop()
     write_exact(path, ("\n".join(lines) + "\n") if lines else "")
@@ -318,6 +368,24 @@ def write_wrappers(home):
 def cmd_install(args):
     if args.scope == "project" and not args.project:
         raise common.RouterError("--scope project needs --project DIR")
+    common.router_home().mkdir(parents=True, exist_ok=True)
+    with install_lock():
+        return _install(args)
+
+
+def foreign_agents(agents_dir):
+    """Agent files with a router agent's name that the router did not write (Claude Code would load those)."""
+    out = []
+    for name in AGENT_FILES:
+        dst = agents_dir / name
+        if dst.exists():
+            current = dst.read_text(encoding="utf-8", errors="replace")
+            if MARKER not in current:
+                out.append(dst)
+    return out
+
+
+def _install(args):
     home = common.router_home()
     code = home / "router"
     try:
@@ -333,6 +401,16 @@ def cmd_install(args):
     guard_entry = hook_entry(code / "guard_hook.py", 15, args.hook_style)
     new_settings = copy.deepcopy(settings)
     add_router_hooks(new_settings, judge_entry, guard_entry)
+    agents_dir = claude_dir(args.scope, args.project) / "agents"
+    foreign = foreign_agents(agents_dir)
+    if foreign and not args.force_agents:
+        raise common.RouterError(
+            "%s already exist(s) and %s not installed by the router. Claude Code would load %s instead of the "
+            "router's agents, so routed work would go to the wrong agent. Nothing was changed. Rename %s, or run "
+            "install again with --force-agents to replace %s (a backup is kept)." % (
+                ", ".join(str(f) for f in foreign), "was" if len(foreign) == 1 else "were",
+                "it" if len(foreign) == 1 else "them", "it" if len(foreign) == 1 else "them",
+                "it" if len(foreign) == 1 else "them"))
 
     code.mkdir(parents=True, exist_ok=True)
     for name in CODE_FILES:
@@ -346,7 +424,6 @@ def cmd_install(args):
         shutil.copy2(str(ROOT / "router" / "router.config.example.json"), str(cfg_path))
         say("[todo] created %s - edit it before the first run (SETUP.md section 5)" % cfg_path)
 
-    agents_dir = claude_dir(args.scope, args.project) / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
     ours = []
     for name in AGENT_FILES:
@@ -358,9 +435,8 @@ def cmd_install(args):
                 ours.append(name)
                 say("[ok] agent %s already up to date" % name)
                 continue
-            if MARKER not in current and not args.force_agents:
-                say("[warn] %s exists and was not installed by the router; left unchanged (use --force-agents)" % dst)
-                continue
+            if MARKER not in current:
+                say("[ok] backup of your own %s: %s" % (name, backup(dst, args.scope)))
         write_exact(dst, src)
         ours.append(name)
         say("[ok] agent written: %s" % dst)
@@ -376,8 +452,8 @@ def cmd_install(args):
     save_registry(reg)
 
     if args.scope == "project":
-        entries = [".claude/settings.local.json"] + [".claude/agents/%s" % n for n in ours]
-        ex = set_git_exclude(Path(args.project).resolve(), entries)
+        names = [".claude/settings.local.json"] + [".claude/agents/%s" % n for n in ours]
+        ex = set_git_exclude(Path(args.project).resolve(), names)
         if ex:
             say("[ok] personal files added to %s (local git ignore, never committed)" % ex)
         else:
@@ -426,6 +502,20 @@ def _uninstall_entry(e):
 def cmd_uninstall(args):
     if args.scope == "project" and not args.project:
         raise common.RouterError("--scope project needs --project DIR")
+    if not common.router_home().exists():
+        say("[ok] nothing installed at %s" % common.router_home())
+        return 0
+    with install_lock():
+        rc = _uninstall(args)
+    if args.purge:
+        try:
+            common.router_home().rmdir()  # empty once the lock file is gone
+        except OSError:
+            pass
+    return rc
+
+
+def _uninstall(args):
     home = common.router_home()
     reg = load_registry()
     this = entry_for(args.scope, args.project)
@@ -442,7 +532,15 @@ def cmd_uninstall(args):
     candidates = {e["settings"] for e in reg} | {str(settings_file("user", None))}
     still = sorted(p for p in candidates if p not in seen and Path(p).exists() and settings_still_hooked(p))
     if args.purge:
-        shutil.rmtree(str(home), ignore_errors=True)
+        for child in list(home.iterdir()) if home.exists() else []:
+            if child.name != "installs.lock":  # held by this process; released (and deleted) on return
+                if child.is_dir():
+                    shutil.rmtree(str(child), ignore_errors=True)
+                else:
+                    try:
+                        child.unlink()
+                    except OSError:
+                        pass
         say("[ok] removed %s (config, logs, state, backups)" % home)
         if still:
             say("[warn] these settings files still reference the router and now do nothing: %s" % ", ".join(still))
@@ -533,7 +631,10 @@ def cmd_doctor(args):
         except common.RouterError as exc:
             report("fail", str(exc))
 
-    files = [Path.home() / ".claude" / "settings.json", Path.home() / ".claude" / "settings.local.json"]
+    profile = common.user_claude_dir()
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        report("ok", "Claude Code profile: %s (from CLAUDE_CONFIG_DIR)" % profile)
+    files = [profile / "settings.json", profile / "settings.local.json"]
     if args.project:
         pr = Path(args.project).resolve() / ".claude"
         files += [pr / "settings.json", pr / "settings.local.json"]
@@ -570,14 +671,29 @@ def cmd_doctor(args):
     else:
         report("fail", "router hooks not found in %s" % ", ".join(str(p) for p in files))
 
-    agent_dirs = [Path.home() / ".claude" / "agents"] + [Path(e["agents_dir"]) for e in load_registry()]
-    if args.project:
-        agent_dirs.append(Path(args.project).resolve() / ".claude" / "agents")
+    # The agent Claude Code loads: the project's .claude/agents wins over the profile's agents folder.
+    project = Path(args.project).resolve() if args.project else Path.cwd().resolve()
+    load_order = [project / ".claude" / "agents", profile / "agents"]
     for name in AGENT_FILES:
-        if any((d / name).exists() for d in agent_dirs):
-            report("ok", "agent %s present" % name)
+        shipped = (ROOT / "agents" / name).read_text(encoding="utf-8")
+        eff = next((d / name for d in load_order if (d / name).exists()), None)
+        if eff is None:
+            elsewhere = [d for d in (Path(e["agents_dir"]) for e in load_registry()) if (d / name).exists()]
+            if elsewhere:
+                report("warn", "agent %s is installed only in %s; run doctor --project for that project"
+                       % (name, ", ".join(str(d) for d in elsewhere)))
+            else:
+                report("fail", "agent %s missing (looked in %s)" % (name, ", ".join(str(d) for d in load_order)))
+            continue
+        text = eff.read_text(encoding="utf-8", errors="replace")
+        if MARKER not in text:
+            report("fail", "%s is not the router's agent, and Claude Code loads it for this folder: rename it or run "
+                           "install --force-agents" % eff)
+        elif text.replace("\r\n", "\n") != shipped:
+            report("warn", "%s differs from the agent shipped with version %s (edited, or an older install): "
+                           "run install again to update it" % (eff, common.VERSION))
         else:
-            report("fail", "agent %s missing" % name)
+            report("ok", "agent %s: %s" % (name, eff))
 
     managed = [Path("C:/Program Files/ClaudeCode/managed-settings.json"),
                Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
@@ -651,7 +767,12 @@ def cmd_report(args):
             out[k] = out.get(k, 0) + 1
         return ", ".join("%s=%d" % kv for kv in sorted(out.items(), key=lambda kv: -kv[1]))
 
-    judged = [r for r in rows if r.get("source") not in ("override", "sticky", "escalation", "slash-command")]
+    def judge_ran(r):
+        if isinstance(r.get("judge_ran"), bool):
+            return r["judge_ran"]
+        attempts = r.get("attempts") if isinstance(r.get("attempts"), list) else []
+        return any(isinstance(a, dict) and a.get("step") != "rules" for a in attempts)
+    judged = [r for r in rows if judge_ran(r)]  # notifications, shortcuts and rules-only decisions call no model
     ms = sorted(int(r["ms"]) for r in judged if common.is_number(r.get("ms")))
     failed = {}
     for r in rows:
@@ -664,7 +785,7 @@ def cmd_report(args):
     say("tiers:     %s" % count("tier"))
     say("sources:   %s" % count("source"))
     if ms:
-        say("judge latency: median %.1fs, p90 %.1fs, max %.1fs (%d judged prompts)" % (
+        say("judge latency: median %.1fs, p90 %.1fs, max %.1fs (%d prompts rated by a model judge)" % (
             ms[len(ms) // 2] / 1000.0, ms[min(len(ms) - 1, int(len(ms) * 0.9))] / 1000.0, ms[-1] / 1000.0, len(ms)))
     say("judge failures: %s" % (", ".join("%s=%d" % kv for kv in failed.items()) or "none"))
     say("reported judge cost: $%.4f (subscription calls may report a notional cost)" % cost)
@@ -672,6 +793,66 @@ def cmd_report(args):
         say("")
         for r in rows[-args.last:]:
             say("%s %-8s %-22s %s" % (r.get("ts"), r.get("tier"), r.get("source"), str(r.get("reason") or "")[:90]))
+    return 0
+
+
+def load_corpus(path):
+    rows = []
+    for n, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError as exc:
+            raise common.RouterError("%s line %d is not JSON: %s" % (path, n, exc))
+        if not (isinstance(r, dict) and isinstance(r.get("prompt"), str) and r.get("expected") in common.TIERS):
+            raise common.RouterError('%s line %d needs {"prompt": "...", "expected": "fast|standard|deep"}' % (path, n))
+        rows.append(r)
+    if not rows:
+        raise common.RouterError("%s has no prompts" % path)
+    return rows
+
+
+def cmd_eval(args):
+    """Run the judge chain over a labeled corpus: accuracy, under/over-routing, latency and cost."""
+    cfg = common.load_config()
+    rows = load_corpus(args.corpus)[:args.limit or None]
+    first = cfg["judge"]["chain"][0]
+    say("evaluating %d prompts from %s with the configured judge chain (first step: %s). Each prompt is one real "
+        "judge call." % (len(rows), args.corpus, first["backend"] if first["backend"] == "rules" else
+                         "%s:%s" % (first["backend"], first["model"])))
+    matrix = {e: {g: 0 for g in common.TIERS} for e in common.TIERS}
+    under, over, ms, cost, sources, misses = 0, 0, [], 0.0, {}, []
+    for r in rows:
+        t0 = time.time()
+        d = judge_hook.decide(r["prompt"], os.getcwd(), {}, cfg)
+        ms.append(int((time.time() - t0) * 1000))
+        got, exp = d["tier"], r["expected"]
+        matrix[exp][got] += 1
+        sources[d.get("source")] = sources.get(d.get("source"), 0) + 1
+        if common.is_number(d.get("cost_usd")):
+            cost += d["cost_usd"]
+        if common.TIER_RANK[got] < common.TIER_RANK[exp]:
+            under += 1
+            misses.append(("UNDER", exp, got, r.get("id") or r["prompt"][:60]))
+        elif common.TIER_RANK[got] > common.TIER_RANK[exp]:
+            over += 1
+            misses.append(("over", exp, got, r.get("id") or r["prompt"][:60]))
+    n = len(rows)
+    ms.sort()
+    say("")
+    say("expected \\ judged   fast  standard  deep")
+    for e in common.TIERS:
+        say("%-18s %5d %9d %5d" % (e, matrix[e]["fast"], matrix[e]["standard"], matrix[e]["deep"]))
+    say("")
+    say("accuracy:      %.0f%% (%d/%d)" % (100.0 * (n - under - over) / n, n - under - over, n))
+    say("under-routed:  %d (judged weaker than labeled: the costly mistake)" % under)
+    say("over-routed:   %d (judged stronger than labeled: slower, more expensive)" % over)
+    say("latency:       median %.1fs, p90 %.1fs" % (ms[n // 2] / 1000.0, ms[min(n - 1, int(n * 0.9))] / 1000.0))
+    say("sources:       %s" % ", ".join("%s=%d" % kv for kv in sorted(sources.items())))
+    say("reported cost: $%.4f" % cost)
+    for m in misses:
+        say("  %-5s expected %-8s judged %-8s %s" % m)
     return 0
 
 
@@ -694,12 +875,15 @@ def main(argv=None):
     p.add_argument("--backend", choices=("all", "subscription", "foundry", "rules"), default="all")
     p = sub.add_parser("report")
     p.add_argument("--last", type=int, default=0)
+    p = sub.add_parser("eval")
+    p.add_argument("--corpus", default=str(DEFAULT_CORPUS))
+    p.add_argument("--limit", type=int, default=0)
     args = ap.parse_args(argv)
     if not args.cmd:
         ap.print_help()
         return 2
     handler = {"install": cmd_install, "uninstall": cmd_uninstall, "doctor": cmd_doctor,
-               "test-judge": cmd_test_judge, "report": cmd_report}[args.cmd]
+               "test-judge": cmd_test_judge, "report": cmd_report, "eval": cmd_eval}[args.cmd]
     try:
         return handler(args)
     except common.RouterError as exc:

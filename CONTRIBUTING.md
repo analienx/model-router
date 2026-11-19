@@ -7,7 +7,7 @@ Thanks for helping. Bug reports with the output of `python install.py doctor` an
 No dependencies: Python 3.8+ and the standard library only. Clone the repository and you are ready.
 
 ```bash
-python -m unittest discover -s tests -v       # 79 unit tests, ~10 s, no network
+python -m unittest discover -s tests -v       # 99 unit tests, ~20 s, no network
 ```
 
 ### End-to-end test with the real Claude Code
@@ -40,7 +40,8 @@ CI fails if the committed SVGs differ from what the script generates. Text in `s
 
 ## Rules for changes
 
-- **Every bug fix ships with a test that fails without the fix.** Name review or e2e regressions `test_review_*` / `test_e2e_*`.
+- **Every bug fix ships with a test that fails without the fix.** Name review or e2e regressions `test_review_*`, `test_review2_*` or `test_e2e_*`.
+- **Changes to `judge_system.md` or the judge model:** run `python install.py eval` before and after, and put both summaries in the pull request. The end-to-end test scripts the verdicts, so it can't tell you whether routing got better.
 - **Standard library only**, and Python 3.8 syntax (no `match`, no `X | Y` type unions, no `str.removeprefix`).
 - **Hooks must never break a Claude Code session.** Unexpected input or errors end in a safe default (exit 0, a clear directive), never a traceback with a blocking exit code.
 - **New readers of config, state, transcripts or settings need a malformed-input test.** Valid JSON with the wrong shape must not crash.
@@ -57,4 +58,4 @@ The **Release** workflow checks that the tag matches `VERSION`, runs the unit te
 
 ## Pull requests
 
-Fill in the template. Both workflows, **Unit tests** and **End-to-end**, must be green on all three operating systems. For changes to how the router talks to Claude Code, include the relevant part of the end-to-end report.
+Fill in the template. Both workflows, **Unit tests** and **End-to-end**, must be green on all three operating systems. To merge into `main`, the stable unit jobs, the offline-bundle job and the pinned-CLI end-to-end jobs must pass (set them as required status checks in the repository's branch rules). The end-to-end job against the latest Claude Code is informational and never blocks a merge. For changes to how the router talks to Claude Code, include the relevant part of the end-to-end report.

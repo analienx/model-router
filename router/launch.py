@@ -6,9 +6,12 @@
 Sets the Foundry variables only for this process tree, so your settings files stay
 free of provider variables and the judge can still use your subscription login.
 """
+import hashlib
+import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 sys.dont_write_bytecode = True
 import common  # noqa: E402
@@ -16,20 +19,92 @@ import common  # noqa: E402
 SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 
+def _load_settings_arg(value):
+    """A --settings value is a JSON string or a path to a JSON file, as in Claude Code."""
+    text = value.strip()
+    try:
+        if not text.startswith("{"):
+            text = Path(value).expanduser().read_text(encoding="utf-8")
+        data = json.loads(text)
+    except (OSError, ValueError) as exc:
+        raise common.RouterError("cannot read --settings %s: %s" % (value, exc))
+    if not isinstance(data, dict):
+        raise common.RouterError("--settings %s must be a JSON object" % value)
+    return data
+
+
+def split_settings(args):
+    """Remove every --settings / --settings=X from args. Returns (other args, [settings objects])."""
+    rest, found, i = [], [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--settings":
+            if i + 1 >= len(args):
+                raise common.RouterError("--settings needs a value")
+            found.append(_load_settings_arg(args[i + 1]))
+            i += 2
+            continue
+        if a.startswith("--settings="):
+            found.append(_load_settings_arg(a[len("--settings="):]))
+        else:
+            rest.append(a)
+        i += 1
+    return rest, found
+
+
+def merged_settings(cfg, user_settings):
+    """Claude Code reads only one --settings argument. The user's settings are merged in order, then the router's
+    modelOverrides are applied on top, so a user --settings can never drop the deployment mapping."""
+    out = {}
+    for s in user_settings:
+        out = common._deep_merge(out, json.loads(json.dumps(s)))
+    ours = common.model_overrides(cfg)
+    if ours:
+        mo = out.get("modelOverrides") if isinstance(out.get("modelOverrides"), dict) else {}
+        for mid, dep in ours.items():
+            if mid in mo and mo[mid] != dep:
+                sys.stderr.write("[router] your --settings maps %s to %s; the router config maps it to %s, which is "
+                                 "used\n" % (mid, mo[mid], dep))
+            mo[mid] = dep
+        out["modelOverrides"] = mo
+    return out
+
+
 def build_launch(cfg, argv, environ):
-    env = common.foundry_env(cfg, environ)
+    env = common.foundry_env(cfg, environ)  # also drops inherited retry overrides (CLAUDE_CODE_RETRY_WATCHDOG, ...)
     env["CLAUDE_CODE_MAX_RETRIES"] = str(cfg["launcher"]["max_retries"])
     env["CLAUDE_ROUTER"] = "1"
-    env.pop("CLAUDE_ROUTER_JUDGE", None)
     cmd = common.resolve_claude_cmd(cfg) + ["--model", "haiku"]
     fb = cfg["launcher"].get("fallback_models") or []
     if fb:
         cmd += ["--fallback-model", ",".join(fb)]
-    settings = common.foundry_settings_file(cfg)
-    if settings:
-        cmd += ["--settings", str(settings)]
-    cmd += list(cfg["launcher"].get("extra_args") or []) + list(argv)
-    return cmd, env
+    rest, user_settings = split_settings(list(cfg["launcher"].get("extra_args") or []) + list(argv))
+    if user_settings:
+        data = merged_settings(cfg, user_settings)
+        digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+        cmd += ["--settings", str(common.write_generated("launch-settings-%s.json" % digest, data))]
+    else:
+        settings = common.foundry_settings_file(cfg)
+        if settings:
+            cmd += ["--settings", str(settings)]
+    return cmd + rest, env
+
+
+def hooks_active(environ, cwd):
+    """True if a settings file Claude Code will read for this folder has the router's hooks."""
+    files = [common.user_claude_dir(environ) / n for n in ("settings.json", "settings.local.json")]
+    d = Path(cwd).resolve()
+    for folder in [d] + list(d.parents):
+        files += [folder / ".claude" / "settings.local.json", folder / ".claude" / "settings.json"]
+    code = (common.router_home() / "router").as_posix()
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8").replace("\\\\", "/").replace("\\", "/")
+        except (OSError, ValueError):
+            continue
+        if code in text and "judge_hook.py" in text:
+            return True
+    return False
 
 
 def describe_changes(env, environ):
@@ -61,6 +136,10 @@ def main(argv):
         models["haiku"], models["sonnet"], models["opus"],
         "rules" if judge["backend"] == "rules" else "%s %s (%s)" % (judge["backend"], judge["model"], judge.get("effort", "default")))
     sys.stderr.write(banner + "\n")
+    if not hooks_active(os.environ, os.getcwd()):
+        sys.stderr.write("[router] warning: no router hooks in %s or this project's .claude folder, so nothing will be "
+                         "routed. If you use CLAUDE_CONFIG_DIR, run `python install.py install` with the same value "
+                         "(SETUP.md, troubleshooting).\n" % common.user_claude_dir())
     if dry:
         sys.stdout.write("command:\n  %s\nenvironment changes made by the router:\n%s\n" % (
             " ".join(cmd), describe_changes(env, os.environ)))

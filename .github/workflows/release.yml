@@ -73,6 +73,16 @@ jobs:
                --title "model-router $VERSION" --notes-file notes.md --verify-tag; then
             exit 0
           fi
-          # The release already exists (published on GitHub, or by the other trigger): attach the files and notes.
-          gh release upload "$tag" dist/*.zip dist/SETUP-offline.md --clobber
-          gh release edit "$tag" --title "model-router $VERSION" --notes-file notes.md
+          # The release already exists (published on GitHub, by the other trigger, or a rerun). Files that are already
+          # attached are never replaced: a published checksum must not change. Only missing files are added.
+          have=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          for f in dist/*.zip dist/SETUP-offline.md; do
+            if printf '%s\n' "$have" | grep -qxF "$(basename "$f")"; then
+              echo "keeping the published $(basename "$f")"
+            else
+              gh release upload "$tag" "$f"
+            fi
+          done
+          if [ -z "$have" ]; then
+            gh release edit "$tag" --title "model-router $VERSION" --notes-file notes.md
+          fi

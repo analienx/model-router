@@ -23,6 +23,7 @@ FILES = [
     "router/judge_system.md", "router/router.config.example.json",
     "agents/architect.md", "agents/implementer.md", "agents/deep-haiku.md",
     "tests/fake_claude.py", "tests/test_router.py", "tests/e2e/mock_anthropic.py", "tests/e2e/run_e2e.py",
+    "tests/eval/routing_corpus.jsonl",
 ]
 ZIP_ONLY = ["docs/assets/%s" % n for n in ("banner-light.svg", "banner-dark.svg", "how-it-works-light.svg",
                                            "how-it-works-dark.svg", "session.svg")]  # README images, not in the appendix
@@ -40,6 +41,15 @@ def version():
     if not m:
         sys.exit("VERSION not found in router/common.py")
     return m.group(1)
+
+
+def _add(z, arcname, data):
+    """Reproducible entry: fixed timestamp and permissions, so the same source always gives the same zip bytes."""
+    info = zipfile.ZipInfo(arcname, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3                # "Unix", whatever OS builds it
+    info.external_attr = 0o644 << 16
+    z.writestr(info, data)
 
 
 def offline_setup():
@@ -75,8 +85,8 @@ def main(argv=None):
     zpath = out / ("%s.zip" % top)
     with zipfile.ZipFile(str(zpath), "w", zipfile.ZIP_DEFLATED) as z:
         for name in FILES + ZIP_ONLY:
-            z.write(str(ROOT / name), "%s/%s" % (top, name))
-        z.writestr("%s/SETUP.md" % top, setup.encode("utf-8"))
+            _add(z, "%s/%s" % (top, name), (ROOT / name).read_bytes())
+        _add(z, "%s/SETUP.md" % top, setup.encode("utf-8"))
     digest = hashlib.sha256(zpath.read_bytes()).hexdigest()
     sys.stdout.write("built %s (%d files, sha256 %s)\nbuilt %s\n" % (zpath, len(FILES) + len(ZIP_ONLY) + 1, digest, out / "SETUP-offline.md"))
     return 0

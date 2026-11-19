@@ -37,6 +37,7 @@
   },
   "logging": {
     "enabled": true,
-    "log_prompt_text": false
+    "log_prompt_text": false,
+    "log_judge_details": false
   }
 }

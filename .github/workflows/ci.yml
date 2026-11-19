@@ -54,6 +54,17 @@ jobs:
           python-version: "3.12"
       - name: Build zip + SETUP-offline.md
         run: python scripts/build_bundle.py --out dist
+      - name: The extracted zip passes its own self-tests
+        run: |
+          mkdir extracted
+          python -m zipfile -e dist/claude-model-router-*.zip extracted
+          cd extracted/claude-model-router-*
+          python -m unittest discover -s tests
+      - name: Rebuilding gives the identical zip
+        run: |
+          sleep 2
+          python scripts/build_bundle.py --out dist-again
+          cmp dist/claude-model-router-*.zip dist-again/claude-model-router-*.zip
       - name: README images match scripts/build_assets.py
         run: |
           python scripts/build_assets.py

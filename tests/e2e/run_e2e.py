@@ -120,8 +120,9 @@ class Run:
         b = self.router_home / "bin"
         return [b / "claude-router.cmd"] if IS_WINDOWS else [b / "claude-router"]
 
-    def claude_args(self, prompt):
-        return ["-p", prompt, "--permission-mode", "acceptEdits", "--output-format", "json", "--max-turns", "15"]
+    def claude_args(self, prompt, *extra):
+        return ["-p", prompt, "--permission-mode", "acceptEdits", "--output-format", "json", "--max-turns", "15"] + \
+            list(extra)
 
     def save_output(self, name, p):
         (self.tmp / ("claude-%s.out.txt" % name)).write_text(
@@ -181,8 +182,9 @@ class Run:
         since = len(self.decisions())
         try:
             self.write_config(port)
+            # An inherited effort level must not change the judge's configured effort (high).
             p = self.run(self.launcher() + self.claude_args("[[e2e:deep]] Change the storage schema and migrate old data"),
-                         self.env(), cwd=work)
+                         self.env(CLAUDE_CODE_EFFORT_LEVEL="low"), cwd=work)
             self.save_output("deep", p)
         finally:
             mock.kill()
@@ -196,7 +198,7 @@ class Run:
         if self.args.subscription_judge == "expect-fail":
             sub_attempt = (dec.get("attempts") or [{}])[0]
             self.check(s, sub_attempt.get("step") == "subscription:sonnet" and not sub_attempt.get("ok"),
-                       "subscription judge ran with every credential stripped, failed (no login on this machine) "
+                       "subscription judge ran with every provider credential stripped, failed (no login on this machine) "
                        "and the chain moved on", (sub_attempt.get("error") or "")[:160])
         self.check(s, judge and judge[0]["model"] == DEPLOYMENTS["standard"],
                    "Foundry judge reached the API on the Sonnet deployment (modelOverrides applied)",
@@ -204,6 +206,9 @@ class Run:
         self.check(s, judge and not judge[0]["system_has_default_prompt"] and not judge[0]["tools"],
                    "judge ran with judge_system.md instead of Claude Code's default system prompt, and with no tools",
                    "system prompt %s chars, tools=%s" % (judge[0]["system_len"], judge[0]["tools"]) if judge else "")
+        self.check(s, judge and judge[0].get("effort") == "high",
+                   "judge kept its configured effort (high) although the shell had CLAUDE_CODE_EFFORT_LEVEL=low",
+                   "effort in the judge request: %s" % (judge[0].get("effort") if judge else None))
         self.check(s, dec.get("tier") == "deep" and dec.get("source") == "foundry:sonnet",
                    "router logged verdict DEEP from foundry:sonnet", "%s / %s" % (dec.get("tier"), dec.get("source")))
         self.check(s, len(judge) == 1, "judge called exactly once: the background-agent notification was not re-judged",
@@ -230,8 +235,9 @@ class Run:
         mock, port, log, work = self.start_mock("fast", MOCK_VERDICT="fast")
         try:
             self.write_config(port)
-            p = self.run(self.launcher() + self.claude_args("[[e2e:fast]] Where is the configuration loaded?"),
-                         self.env(), cwd=work)
+            # A user --settings must be merged with the router's deployment mapping, not replace it.
+            p = self.run(self.launcher() + self.claude_args("[[e2e:fast]] Where is the configuration loaded?",
+                                                            "--settings", "{}"), self.env(), cwd=work)
             self.save_output("fast", p)
         finally:
             mock.kill()
@@ -240,6 +246,9 @@ class Run:
         ctx = next((r["router_context"] for r in main if r.get("router_context")), None)
         self.check(s, p.returncode == 0, "real `claude` finished", "exit %s" % p.returncode)
         self.check(s, ctx and "Verdict for this prompt: FAST" in ctx, "FAST directive injected", (ctx or "")[:110])
+        self.check(s, main and all(r["model"] == DEPLOYMENTS["fast"] for r in main),
+                   "with `--settings {}` passed by the user, requests still go to the Haiku deployment name",
+                   "models=%s" % sorted({r["model"] for r in main}))
         self.check(s, (work / "fast_small.txt").exists(), "guard ALLOWED a 5-line Write within the FAST budget (40)",
                    self.write_evidence(recs, "main", index=0))
         full = max(main, key=lambda r: len(r.get("tool_results") or [])) if main else {}
@@ -253,8 +262,9 @@ class Run:
         mock, port, log, work = self.start_mock("throttle", MOCK_VERDICT="deep", MOCK_THROTTLE_MODEL=DEPLOYMENTS["deep"])
         try:
             self.write_config(port)
+            # Inherited retry overrides must not keep Claude Code retrying instead of failing over.
             p = self.run(self.launcher() + self.claude_args("[[e2e:throttle]] Redesign the export locking"),
-                         self.env(), cwd=work)
+                         self.env(CLAUDE_CODE_MAX_RETRIES="20", CLAUDE_CODE_RETRY_WATCHDOG="1"), cwd=work)
             self.save_output("throttle", p)
         finally:
             mock.kill()
@@ -263,17 +273,65 @@ class Run:
         throttled = [r for r in recs if r.get("response") == "429"]
         self.check(s, p.returncode == 0, "real `claude` finished", "exit %s" % p.returncode)
         self.check(s, throttled, "the Opus deployment answered HTTP 429 to `architect`",
-                   "%d throttled request(s); retries capped by the launcher" % len(throttled))
+                   "%d throttled request(s)" % len(throttled))
+        self.check(s, 0 < len(throttled) <= 4,
+                   "retries stayed within the launcher's limit (1 + 3) although the shell had "
+                   "CLAUDE_CODE_MAX_RETRIES=20 and CLAUDE_CODE_RETRY_WATCHDOG=1", "%d Opus request(s)" % len(throttled))
         arch = self.find_result(main, "Agent", "architect") or self.find_result(main, "Task", "architect")
         self.notes.append("What Claude Code reported to Haiku for the throttled `architect`: %r"
                           % ((arch or {}).get("text", "")[:300]))
         fb = self.find_result(main, "Agent", "deep-haiku") or self.find_result(main, "Task", "deep-haiku")
         self.check(s, fb is not None and "[router]" not in fb["text"],
-                   "guard ALLOWED `deep-haiku` because the transcript shows the 429", (fb or {}).get("text", "")[:140])
+                   "guard ALLOWED `deep-haiku` because this prompt's `architect` call failed with 429",
+                   (fb or {}).get("text", "")[:140])
         self.check(s, (work / "fallback.txt").exists(), "`deep-haiku` did the work (file created)",
                    self.write_evidence(recs, "subagent"))
         fb_models = sorted({r["model"] for r in recs if r.get("actor") == "subagent" and r.get("response") != "429"})
         self.check(s, fb_models == [DEPLOYMENTS["fast"]], "`deep-haiku` ran on the Haiku deployment", "models=%s" % fb_models)
+
+    def scenario_named(self):
+        s = "named session"
+        mock, port, log, work = self.start_mock("named", MOCK_VERDICT="fast")
+        try:
+            self.write_config(port)
+            # `--agent implementer` makes the MAIN session run as implementer: Claude Code then sends agent_type
+            # without agent_id, and the guard must still apply the main session's budget.
+            p = self.run(self.launcher() + self.claude_args("[[e2e:fast]] Where is the configuration loaded?",
+                                                            "--agent", "implementer"), self.env(), cwd=work)
+            self.save_output("named", p)
+        finally:
+            mock.kill()
+        recs = self.records(log)
+        main = [r for r in recs if r.get("actor") == "main"]
+        self.check(s, p.returncode == 0, "real `claude --agent implementer` finished", "exit %s" % p.returncode)
+        full = max(main, key=lambda r: len(r.get("tool_results") or [])) if main else {}
+        results = [t for t in full.get("tool_results") or [] if t.get("tool") == "Write"]
+        big = results[1] if len(results) > 1 else None
+        self.check(s, big and "main-thread" in big["text"] and not (work / "fast_big.txt").exists(),
+                   "a main session started with `--agent implementer` still gets the FAST main-session budget: its "
+                   "100-line Write is DENIED", (big or {}).get("text", "")[:140])
+
+    def scenario_parallel(self):
+        s = "parallel calls"
+        mock, port, log, work = self.start_mock("parallel", MOCK_VERDICT="deep")
+        before = {f: f.stat().st_mtime for f in (self.router_home / "state").glob("*.json")} \
+            if (self.router_home / "state").exists() else {}
+        try:
+            self.write_config(port)
+            p = self.run(self.launcher() + self.claude_args("[[e2e:parallel]] Redesign the import pipeline"),
+                         self.env(), cwd=work)
+            self.save_output("parallel", p)
+        finally:
+            mock.kill()
+        self.check(s, p.returncode == 0, "real `claude` finished three parallel `architect` calls", "exit %s" % p.returncode)
+        made = sorted(f.name for f in work.glob("par_*.txt"))
+        self.check(s, made == ["par_0.txt", "par_1.txt", "par_2.txt"], "all three `architect` subagents did their work",
+                   "files=%s" % made)
+        states = [f for f in (self.router_home / "state").glob("*.json") if before.get(f) != f.stat().st_mtime]
+        newest = max(states, key=lambda f: f.stat().st_mtime) if states else None
+        pinned = json.loads(newest.read_text(encoding="utf-8")).get("pinned_calls", []) if newest else []
+        self.check(s, len(pinned) == 3, "the guard recorded all three parallel calls (no lost state updates)",
+                   "pinned_calls=%s" % pinned)
 
     def scenario_unaffected(self):
         s = "safety"
@@ -342,7 +400,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--claude")
     ap.add_argument("--keep", action="store_true", help="keep the temporary folder")
-    ap.add_argument("--only", default="deep,fast,throttle,safety")
+    ap.add_argument("--only", default="deep,fast,throttle,named,parallel,safety")
     ap.add_argument("--artifacts", help="copy the report, mock logs and claude output here")
     ap.add_argument("--debug-hooks", action="store_true", help="save every hook input (CLAUDE_ROUTER_DEBUG_DIR)")
     ap.add_argument("--subscription-judge", choices=("expect-fail", "skip"), default="expect-fail",
@@ -353,8 +411,9 @@ def main():
     try:
         r.install()
         wanted = set(args.only.split(","))
-        for name, fn in (("deep", r.scenario_deep), ("fast", r.scenario_fast),
-                         ("throttle", r.scenario_throttle), ("safety", r.scenario_unaffected)):
+        for name, fn in (("deep", r.scenario_deep), ("fast", r.scenario_fast), ("throttle", r.scenario_throttle),
+                         ("named", r.scenario_named), ("parallel", r.scenario_parallel),
+                         ("safety", r.scenario_unaffected)):
             if name in wanted:
                 try:
                     fn()

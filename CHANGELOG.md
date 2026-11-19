@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/).
 
+## [1.3.0] - 2026-11-19
+
+Fixes for the findings of an external review of 1.2.1. Each fix has a regression test (`test_review2_*`), and the end-to-end test checks the main ones with the real Claude Code.
+
+### Fixed
+- **`deep-haiku` evidence is scoped to the current prompt and to real failures.** The transcript check no longer falls back to an `architect`/`implementer` call of an earlier prompt, and it requires a notification with `<status>failed</status>` or an error `tool_result`. A successful result that mentions rate limits never counts.
+- **Parallel hooks no longer lose updates.** State changes run under a per-session lock, and each prompt has a generation number, so a slow update for an older prompt cannot overwrite a newer one. Three parallel `architect` calls are now all recorded.
+- **A main session started with `--agent NAME` is treated as the main session.** The guard identifies subagents by `agent_id`, not `agent_type`.
+- **One delegate policy, enforced as documented.** STANDARD and DEEP refuse `general-purpose` and forks from the main session; agent calls made inside subagents are checked for `model` overrides and for `deep-haiku` evidence.
+- **No prompt-derived text crosses providers or lands in default logs.** The next judge gets only the previous tier, not its reason. Model-written reasons and raw judge errors are logged only with the new `logging.log_judge_details`.
+- **Inherited environment variables can no longer override the router.** `CLAUDE_CODE_MAX_RETRIES` and `CLAUDE_CODE_RETRY_WATCHDOG` are replaced for every child; judges ignore `CLAUDE_CODE_EFFORT_LEVEL` and `MAX_THINKING_TOKENS`; Foundry children drop `CLAUDE_CODE_OAUTH_TOKEN`. The policy is documented in the guide, section 7.6.
+- **A user `--settings` no longer drops the deployment mapping.** The launcher merges it with the router's `modelOverrides` into one file. Two tiers mapping the same model ID to different deployments are rejected.
+- **Install and doctor follow the profile Claude Code reads** (`CLAUDE_CONFIG_DIR`). The launcher warns when the active profile has no router hooks.
+- **A same-named agent of yours stops the install** instead of being kept while routing is switched on; `--force-agents` replaces it with a backup. `doctor` validates the agent Claude Code will load, including a project's own agents.
+- **Project installs in a git subfolder are ignored correctly**, with a separate ignore block per project. Installs and uninstalls are serialised by a lock, so parallel runs keep every registry entry.
+- **Edit counting matches Claude Code** for `replace_all` on files with Windows line endings and for notebook cell inserts.
+- **The offline zip passes its own self-tests** (the bundle-builder tests skip outside a source checkout), and CI now runs them from the extracted zip.
+- **Release files are reproducible and never replaced.** The zip has fixed timestamps and permissions, and a rerun of the release workflow keeps already-published files.
+- `report` computes judge latency only from prompts a model judge rated, not from notifications and shortcuts.
+
+### Added
+- `python install.py eval`: runs the judge chain over a labeled corpus and reports accuracy, under- and over-routing, latency and cost. A starter corpus of 30 synthetic prompts is in `tests/eval/`.
+- End-to-end: 8 new checks in 2 new scenarios (named main session, parallel calls), plus inherited-environment and `--settings` checks; 33 checks in total.
+
 ## [1.2.1] - 2026-11-18
 
 Found by the end-to-end test on GitHub's runners.
@@ -63,6 +87,7 @@ Fixes for all 15 findings of a code review, each with a regression test.
   - Foundry launcher;
   - installer with `doctor`, `test-judge` and `report`.
 
+[1.3.0]: https://github.com/analienx/model-router/releases/tag/v1.3.0
 [1.2.1]: https://github.com/analienx/model-router/releases/tag/v1.2.1
 [1.2.0]: https://github.com/analienx/model-router/releases/tag/v1.2.0
 [1.1.0]: https://github.com/analienx/model-router/releases/tag/v1.1.0
