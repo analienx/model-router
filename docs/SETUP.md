@@ -138,7 +138,7 @@ cd C:\Tools\claude-model-router
 python -m unittest discover -s tests
 ```
 
-Expected: `Ran 99 tests ... OK` (from the offline zip: `OK (skipped=2)`, because the zip does not ship the bundle builder). The tests use a fake `claude` (`tests/fake_claude.py`), so no model is called and nothing is billed.
+Expected: `Ran 106 tests ... OK` (from the offline zip: `OK (skipped=2)`, because the zip does not ship the bundle builder). The tests use a fake `claude` (`tests/fake_claude.py`), so no model is called and nothing is billed.
 
 ### 4.3 Log in to your Claude subscription (used by the judge)
 
@@ -261,11 +261,31 @@ cd C:\src\your-repo
 claude-router
 ```
 
-You'll see a banner like:
+You'll see a banner like this (in colour on a terminal that supports it, with each tier in its own colour):
 
+```text
+╭────────────────────────────────────────────────────────────────────╮
+│ ◆ model-router 1.3.0          difficulty-based model routing       │
+├────────────────────────────────────────────────────────────────────┤
+│ FAST      → claude-haiku-5-5  Haiku handles it                     │
+│ STANDARD  → team-sonnet       implementer (Sonnet)                 │
+│ DEEP      → claude-opus-5-5   architect (Opus)                     │
+├────────────────────────────────────────────────────────────────────┤
+│ judge    subscription sonnet (max) → foundry sonnet (high) → rules │
+│ guard    Haiku edits ≤ 40 / 10 / 0 lines · retries 3               │
+│ foundry  contoso-ai · entra                                        │
+╰────────────────────────────────────────────────────────────────────╯
+  ::fast  ::standard  ::deep  choose a tier yourself · claude-router --router-dry-run
 ```
-[router] Foundry contoso-ai | haiku=claude-haiku-5-5 sonnet=claude-sonnet-5-5 opus=claude-opus-5-5 | judge: subscription sonnet (max)
+
+After each prompt, Claude Code shows you one line with the verdict. It is shown to you only and is not added to the model's context:
+
+```text
+◆ router: DEEP → architect (Opus) · judge subscription:sonnet 0.86 · 2.4s
+◆ router: FAST → Haiku handles it (edits ≤ 40 lines) · your ::fast override
 ```
+
+Background-agent notifications stay quiet, except when one unlocks the `deep-haiku` fallback. The look is set in section 5.9. Colour follows the usual conventions: none when output isn't a terminal or `NO_COLOR` is set, forced with `FORCE_COLOR=1`. Where the console can't print box-drawing characters (some Windows code pages), the banner falls back to plain ASCII.
 
 Any normal `claude` arguments still work, for example `claude-router --resume` or `claude-router -c`.
 
@@ -313,7 +333,8 @@ The file lives at `%USERPROFILE%\.claude-router\router.config.json`; set the env
     "main_edit_budget": { "fast": 40, "standard": 10, "deep": 0 },
     "other_subagent_edit_lines": 20
   },
-  "logging": { "enabled": true, "log_prompt_text": false, "log_judge_details": false }
+  "logging": { "enabled": true, "log_prompt_text": false, "log_judge_details": false },
+  "ui": { "banner": "full", "verdict_line": true }
 }
 ```
 
@@ -439,6 +460,17 @@ After changing timeouts, run `python install.py install` again so the hook timeo
 | `enabled` | Writes one JSON line per prompt to `%USERPROFILE%\.claude-router\logs\decisions.jsonl`. |
 | `log_prompt_text` | `false` (default) stores only a hash and the length of the prompt. `true` also stores the first 2,000 characters, which is useful for calibration but should only be used if that is allowed for your data. |
 | `log_judge_details` | `false` (default) stores no text written by a model judge: its reason is replaced by a placeholder, and judge errors are stored as a short category. `true` keeps the judge's reason and the full error messages, which can quote the prompt. `test-judge` always shows the full detail on screen. |
+
+---
+
+### 5.9 `ui`
+
+| Field | Meaning |
+|---|---|
+| `banner` | `"full"` (default): the framed banner in section 4.9. `"compact"`: one line. `"off"`: nothing, except warnings such as "no router hooks". Terminals narrower than 72 columns always get the one-line form. |
+| `verdict_line` | `true` (default): after each prompt, Claude Code shows you the verdict, who does the work, the judge and its latency. `false`: nothing is shown; routing works the same. |
+
+`python install.py` uses coloured ✓ / ! / ✗ marks on a colour terminal, and the plain `[ok]` / `[warn]` / `[fail]` tags otherwise (for logs and scripts).
 
 ---
 
@@ -710,8 +742,8 @@ These are rough estimates; measure your own with `test-judge` and `report`.
 Read these honestly before relying on the router.
 
 1. **What has been proven, and how.**
-   - **99 unit tests** with a fake `claude`, covering the hook contracts, environment separation, fallbacks, the guard's counting and agent rules, parallel hooks and installs, the installer, and malformed and non-ASCII input. 27 of them are regressions from the first code review (24 fail on version 1.0.0; the other 3 guard new code or a Windows-only behaviour), 3 come from the end-to-end runs (2 fail on 1.1.0, 1 on 1.2.0), and 21 cover the findings of the second review (version 1.3.0).
-   - **An end-to-end test** (`tests/e2e/run_e2e.py`) that runs the **real Claude Code CLI** through the installed `claude-router` launcher against a local mock of the Anthropic/Foundry API, with no model, account or network. It checks 33 things across 7 scenarios (install, DEEP, FAST, 429 fallback, named session, parallel calls, safety): that the judge reaches the Sonnet deployment with `judge_system.md` as its only system prompt, no tools and its configured effort (although the shell sets `CLAUDE_CODE_EFFORT_LEVEL=low`), the main session on the Haiku deployment (also when you pass your own `--settings`), the injected verdict, denied and allowed edits, DEEP refusing `implementer`, `architect` on the Opus deployment, the 429 → `deep-haiku` fallback within the retry limit (although the shell sets `CLAUDE_CODE_MAX_RETRIES=20` and `CLAUDE_CODE_RETRY_WATCHDOG=1`), a main session started with `--agent implementer` keeping the main-session budget, three parallel `architect` calls all recorded, an untouched plain `claude`, and missing router code not blocking Claude Code. The project's CI runs it on every push on Linux, macOS and Windows with Claude Code 2.1.327, and weekly against the latest Claude Code; each run's summary has the full report.
+   - **106 unit tests** with a fake `claude`, covering the hook contracts, environment separation, fallbacks, the guard's counting and agent rules, parallel hooks and installs, the installer, and malformed and non-ASCII input. 27 of them are regressions from the first code review (24 fail on version 1.0.0; the other 3 guard new code or a Windows-only behaviour), 3 come from the end-to-end runs (2 fail on 1.1.0, 1 on 1.2.0), and 21 cover the findings of the second review (version 1.3.0).
+   - **An end-to-end test** (`tests/e2e/run_e2e.py`) that runs the **real Claude Code CLI** through the installed `claude-router` launcher against a local mock of the Anthropic/Foundry API, with no model, account or network. It checks 34 things across 7 scenarios (install, DEEP, FAST, 429 fallback, named session, parallel calls, safety): that the judge reaches the Sonnet deployment with `judge_system.md` as its only system prompt, no tools and its configured effort (although the shell sets `CLAUDE_CODE_EFFORT_LEVEL=low`), the main session on the Haiku deployment (also when you pass your own `--settings`), the injected verdict, denied and allowed edits, DEEP refusing `implementer`, `architect` on the Opus deployment, the 429 → `deep-haiku` fallback within the retry limit (although the shell sets `CLAUDE_CODE_MAX_RETRIES=20` and `CLAUDE_CODE_RETRY_WATCHDOG=1`), a main session started with `--agent implementer` keeping the main-session budget, three parallel `architect` calls all recorded, an untouched plain `claude`, and missing router code not blocking Claude Code. The project's CI runs it on every push on Linux, macOS and Windows with Claude Code 2.1.327, and weekly against the latest Claude Code; each run's summary has the full report.
    - **Not proven:** a real Foundry resource, a real subscription judge call in CI (the runners have no login, so the test asserts that step fails cleanly), real interactive use, and **routing quality** on your own work: the mock scripts the verdicts, so the end-to-end test proves the plumbing, not the judge's accuracy. `python install.py eval` measures that (section 9). Your first real run is the final check; that is what sections 4.8 and 6 are for.
 2. **Windows-specific code** (the process-tree kill on judge timeout, the launcher's Ctrl+C handling, exact line endings) is exercised by the Windows CI jobs, not by hand. Check the CI results for your Claude Code version.
 3. **The judge isolation flags** (`--setting-sources`, `--settings` with `disableAllHooks`, `CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `--bare` for Foundry) are taken from the Claude Code documentation. Nobody has watched them in a live judge run. If your Claude Code rejects one, the judge fails visibly and the rules take over (section 11).
@@ -761,6 +793,7 @@ model-router/
     judge_hook.py                UserPromptSubmit hook (judge chain, directive)
     guard_hook.py                PreToolUse hook (edit budgets, agent-vs-verdict, pinned models)
     launch.py                    claude-router launcher (Foundry environment)
+    ui.py                        launch banner, per-prompt verdict line, coloured installer output
     judge_system.md              judge instructions and team examples (edit me)
     router.config.example.json   default configuration
   agents/
@@ -769,7 +802,7 @@ model-router/
     deep-haiku.md                haiku alias, effort max (429/529 fallback)
   tests/
     fake_claude.py               stand-in for the claude CLI (no network)
-    test_router.py               99 unit tests (test_review_* / test_review2_* = code review regressions)
+    test_router.py               106 unit tests (test_review_* / test_review2_* = code review regressions)
     eval/routing_corpus.jsonl    labeled synthetic prompts for `install.py eval`
     e2e/
       mock_anthropic.py          local mock of the Anthropic / Foundry Messages API

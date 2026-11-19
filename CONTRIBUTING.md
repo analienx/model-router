@@ -7,7 +7,7 @@ Thanks for helping. Bug reports with the output of `python install.py doctor` an
 No dependencies: Python 3.8+ and the standard library only. Clone the repository and you are ready.
 
 ```bash
-python -m unittest discover -s tests -v       # 99 unit tests, ~20 s, no network
+python -m unittest discover -s tests -v       # 106 unit tests, ~20 s, no network
 ```
 
 ### End-to-end test with the real Claude Code

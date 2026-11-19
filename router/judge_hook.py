@@ -23,6 +23,7 @@ import time
 
 sys.dont_write_bytecode = True
 import common  # noqa: E402  (same directory)
+import ui  # noqa: E402
 
 JUDGE_INSTRUCTION = "Classify the coding task given on standard input. Reply with the JSON object only."
 
@@ -351,6 +352,21 @@ def directive(tier, decision, cfg):
     return "\n".join([head, body, rules])
 
 
+def user_line(tier, decision, cfg, ms):
+    """The verdict line Claude Code shows the user, or None. Notifications stay quiet unless they unlock the fallback."""
+    if not cfg["ui"]["verdict_line"]:
+        return None
+    try:
+        if decision.get("source") == "notification":
+            if "now accepted" not in (decision.get("reason") or ""):
+                return None
+            return "%s router: fallback unlocked %s `deep-haiku` is accepted (an architect/implementer call hit " \
+                   "429/529)" % (ui.BOX_UNICODE["dot"], ui.BOX_UNICODE["sep"])
+        return ui.verdict_line(tier, decision, cfg, ms)
+    except Exception:
+        return None
+
+
 ROUTER_SOURCES = ("override", "sticky", "escalation", "slash-command", "notification", "rules", "none", "error")
 
 
@@ -393,8 +409,12 @@ def log_record(cfg, session, tier, decision, prompt, ms):
     return record
 
 
-def emit_context(text):
-    common.emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}})
+def emit_context(text, user_message=None):
+    """additionalContext goes to the model; systemMessage is shown to the user only."""
+    out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+    if user_message:
+        out["systemMessage"] = user_message
+    common.emit(out)
 
 
 def main():
@@ -423,7 +443,9 @@ def main():
         cfg = common.load_config()
     except common.RouterError as exc:
         emit_context("[router] Routing is OFF for this prompt because the router configuration is invalid: %s. "
-                     "Tell the user." % exc)
+                     "Tell the user." % exc,
+                     "%s router: OFF for this prompt, the configuration is invalid (python install.py doctor)"
+                     % ui.BOX_UNICODE["dot"])
         return 0
     t0 = time.time()
     try:
@@ -460,10 +482,11 @@ def main():
                                   "is now accepted for this prompt" % tid)
         return state
     common.update_state(session, commit)
-    common.append_log(cfg, log_record(cfg, session, tier, decision, prompt, int((time.time() - t0) * 1000)))
+    ms = int((time.time() - t0) * 1000)
+    common.append_log(cfg, log_record(cfg, session, tier, decision, prompt, ms))
     if decision.get("source") not in ("override", "sticky", "escalation", "slash-command", "notification"):
         common.cleanup_old_state()
-    emit_context(directive(tier, decision, cfg))
+    emit_context(directive(tier, decision, cfg), user_line(tier, decision, cfg, ms))
     return 0
 
 

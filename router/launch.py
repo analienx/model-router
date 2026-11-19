@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 import common  # noqa: E402
+import ui  # noqa: E402
 
 SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
@@ -129,17 +130,20 @@ def main(argv):
     except common.RouterError as exc:
         sys.stderr.write("[router] cannot start: %s\n" % exc)
         return 2
-    models = common.alias_models(cfg)
-    judge = cfg["judge"]["chain"][0]
-    banner = "[router] Foundry %s | haiku=%s sonnet=%s opus=%s | judge: %s" % (
-        env.get("ANTHROPIC_FOUNDRY_RESOURCE") or env.get("ANTHROPIC_FOUNDRY_BASE_URL"),
-        models["haiku"], models["sonnet"], models["opus"],
-        "rules" if judge["backend"] == "rules" else "%s %s (%s)" % (judge["backend"], judge["model"], judge.get("effort", "default")))
-    sys.stderr.write(banner + "\n")
+    warnings = []
     if not hooks_active(os.environ, os.getcwd()):
-        sys.stderr.write("[router] warning: no router hooks in %s or this project's .claude folder, so nothing will be "
-                         "routed. If you use CLAUDE_CONFIG_DIR, run `python install.py install` with the same value "
-                         "(SETUP.md, troubleshooting).\n" % common.user_claude_dir())
+        warnings.append("no router hooks in %s or this project's .claude folder, so nothing will be routed. If you use "
+                        "CLAUDE_CONFIG_DIR, run `python install.py install` with the same value (SETUP.md, "
+                        "troubleshooting)." % common.user_claude_dir())
+    endpoint = env.get("ANTHROPIC_FOUNDRY_RESOURCE") or env.get("ANTHROPIC_FOUNDRY_BASE_URL")
+    try:
+        lines = ui.banner(cfg, common.VERSION, endpoint, ui.Painter(sys.stderr), mode=cfg["ui"]["banner"],
+                          warnings=warnings)
+        sys.stderr.write("\n".join(lines) + ("\n" if lines else ""))
+    except Exception as exc:  # graphics must never stop Claude Code from starting
+        sys.stderr.write("[router] Foundry %s (banner error: %s)\n" % (endpoint, exc))
+        for w in warnings:
+            sys.stderr.write("[router] warning: %s\n" % w)
     if dry:
         sys.stdout.write("command:\n  %s\nenvironment changes made by the router:\n%s\n" % (
             " ".join(cmd), describe_changes(env, os.environ)))

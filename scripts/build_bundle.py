@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FILES = [
     "README.md", "LICENSE", "CHANGELOG.md", "install.py",
-    "router/common.py", "router/judge_hook.py", "router/guard_hook.py", "router/launch.py",
+    "router/common.py", "router/judge_hook.py", "router/guard_hook.py", "router/launch.py", "router/ui.py",
     "router/judge_system.md", "router/router.config.example.json",
     "agents/architect.md", "agents/implementer.md", "agents/deep-haiku.md",
     "tests/fake_claude.py", "tests/test_router.py", "tests/e2e/mock_anthropic.py", "tests/e2e/run_e2e.py",

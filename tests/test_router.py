@@ -6,6 +6,7 @@ No network, no real model calls: `claude` is replaced by tests/fake_claude.py.
 Tests named test_review_* are regressions for the first code review (v1.1.0), test_e2e_* for problems found by
 the end-to-end runs, and test_review2_* for the second review (v1.3.0).
 """
+import io
 import json
 import os
 import shutil
@@ -25,6 +26,7 @@ sys.dont_write_bytecode = True
 import common  # noqa: E402
 import judge_hook  # noqa: E402
 import launch  # noqa: E402
+import ui  # noqa: E402
 
 BIG = "x\n" * 40
 MARKER_TEXT = "<!-- installed by claude-model-router -->"
@@ -1227,6 +1229,108 @@ class InstallerTests(RouterTestCase):
             self.assertEqual(p.returncode, 0, bad + p.stdout + p.stderr)
             p = self.run_install("uninstall", home=uh)
             self.assertEqual(p.returncode, 0, bad + p.stdout + p.stderr)
+
+
+class UiTests(RouterTestCase):
+    class Stream(io.StringIO):
+        def __init__(self, encoding="utf-8", tty=False):
+            io.StringIO.__init__(self)
+            self._enc, self._tty = encoding, tty
+
+        @property
+        def encoding(self):
+            return self._enc
+
+        def isatty(self):
+            return self._tty
+
+    def cfg(self):
+        self.config["tiers"]["standard"]["deployment"] = "team-sonnet"
+        self.write_config()
+        return common.load_config(self.home / "router.config.json")
+
+    def test_colour_follows_no_color_force_color_and_tty(self):
+        self.assertFalse(ui.Painter(self.Stream(tty=False), environ={}).color)
+        self.assertTrue(ui.Painter(self.Stream(), environ={"FORCE_COLOR": "1"}).color)
+        self.assertFalse(ui.Painter(self.Stream(), environ={"FORCE_COLOR": "1", "NO_COLOR": "1"}).color)
+        self.assertIn("\x1b[", ui.Painter(self.Stream(), environ={"FORCE_COLOR": "1"}).paint("x", "bold"))
+        self.assertEqual(ui.Painter(self.Stream(), environ={}).paint("x", "bold"), "x")
+
+    def test_unicode_only_when_the_stream_can_encode_it(self):
+        self.assertEqual(ui.Painter(self.Stream("utf-8"), environ={}).g["tl"], "\u256d")
+        self.assertEqual(ui.Painter(self.Stream("cp1252"), environ={}).g["tl"], "+")
+        self.assertEqual(ui.Painter(self.Stream("ascii"), environ={}).g["arrow"], "->")
+
+    def test_full_banner_is_an_aligned_box_with_every_deployment(self):
+        cfg = self.cfg()
+        for unicode in (True, False):
+            for color in (True, False):
+                painter = ui.Painter(self.Stream(), environ={}, color=color, unicode=unicode)
+                lines = ui.banner(cfg, "9.9.9", "test-resource", painter, columns=120)
+                frame = [l for l in lines if ui.ANSI_RE.sub("", l).startswith((painter.g["v"], painter.g["tl"],
+                                                                                painter.g["bl"], painter.g["ml"]))]
+                widths = {ui.visible_len(l) for l in frame}
+                self.assertEqual(len(widths), 1, (unicode, color, widths))
+                self.assertLessEqual(widths.pop(), 100)
+                text = ui.ANSI_RE.sub("", "\n".join(lines))
+                for needle in ("model-router", "9.9.9", "claude-haiku-5-5", "team-sonnet", "claude-opus-5-5",
+                               "architect (Opus)", "subscription sonnet (max)", "test-resource"):
+                    self.assertIn(needle, text)
+                self.assertEqual("\x1b" in "".join(lines), color)
+                if not unicode:
+                    "\n".join(lines).encode("ascii")
+
+    def test_compact_off_and_warnings(self):
+        cfg = self.cfg()
+        painter = ui.Painter(self.Stream(), environ={}, color=False, unicode=True)
+        compact = ui.banner(cfg, "9.9.9", "r", painter, mode="compact", warnings=["no hooks"])
+        self.assertEqual(len(compact), 2)
+        self.assertIn("team-sonnet", compact[0])
+        self.assertIn("no hooks", compact[1])
+        self.assertEqual(len(ui.banner(cfg, "9.9.9", "r", painter, columns=60)), 1, "narrow terminals get one line")
+        self.assertEqual(ui.banner(cfg, "9.9.9", "r", painter, mode="off", warnings=["w"]), ["! w"])
+        self.config["tiers"]["deep"]["deployment"] = None
+        self.write_config()
+        cfg = common.load_config(self.home / "router.config.json")
+        text = "\n".join(ui.banner(cfg, "9.9.9", "r", painter, columns=120))
+        self.assertIn("no deployment: uses STANDARD", text)
+
+    def test_judge_hook_shows_a_verdict_line_to_the_user_only(self):
+        out = self.judge("Change the storage schema and migrate old data", FAKE_CLAUDE_MODE="deep")
+        msg = out["systemMessage"]
+        self.assertIn("DEEP", msg)
+        self.assertIn("architect (Opus)", msg)
+        self.assertIn("judge subscription:sonnet 0.90", msg)
+        self.assertNotIn("\x1b", msg)
+        self.assertNotIn("router:", self.context(out).split("\n")[0][:9])
+        out = self.judge("::fast where is main?", FAKE_CLAUDE_MODE="fail_if_called")
+        self.assertIn("your ::fast override", out["systemMessage"])
+        out = self.judge("<task-notification>\n<status>completed</status>\n</task-notification>",
+                         FAKE_CLAUDE_MODE="fail_if_called")
+        self.assertNotIn("systemMessage", out, "routine notifications stay quiet")
+        self.config["ui"] = {"banner": "off", "verdict_line": False}
+        self.write_config()
+        out = self.judge("please refactor the parser module", FAKE_CLAUDE_MODE="standard")
+        self.assertNotIn("systemMessage", out)
+        self.assertIn("STANDARD", self.context(out))
+
+    def test_invalid_ui_settings_are_rejected(self):
+        for bad in ({"banner": "huge", "verdict_line": True}, {"banner": "full", "verdict_line": "yes"}):
+            self.config["ui"] = bad
+            self.write_config()
+            with self.assertRaises(common.RouterError):
+                common.load_config(self.home / "router.config.json")
+
+    def test_launcher_prints_the_banner_on_stderr_only(self):
+        p = subprocess.run([sys.executable, str(ROUTER / "launch.py"), "--router-dry-run"], capture_output=True,
+                           text=True, encoding="utf-8", timeout=60,
+                           env=dict(self.base_env, PYTHONIOENCODING="utf-8"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("model-router", p.stderr)
+        self.assertIn("\u256d", p.stderr)
+        self.assertIn("no router hooks", p.stderr)
+        self.assertNotIn("model-router", p.stdout)
+        self.assertNotIn("\x1b", p.stderr, "no colour when stderr is not a terminal")
 
 
 SOURCE_CHECKOUT = (ROOT / "docs" / "SETUP.md").is_file() and (ROOT / "scripts" / "build_bundle.py").is_file()

@@ -90,12 +90,16 @@ DEFAULT_CONFIG = {
         "log_prompt_text": False,
         "log_judge_details": False,
     },
+    "ui": {
+        "banner": "full",
+        "verdict_line": True,
+    },
 }
 
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 VALID_BACKENDS = ("subscription", "foundry", "rules")
 VALID_ALIASES = ("haiku", "sonnet", "opus", "fable")
-SECTIONS = ("foundry", "tiers", "launcher", "judge", "guard", "logging")
+SECTIONS = ("foundry", "tiers", "launcher", "judge", "guard", "logging", "ui")
 
 
 class RouterError(Exception):
@@ -259,6 +263,10 @@ def validate_config(cfg):
     _require(isinstance(lg.get("enabled"), bool), "logging.enabled must be true or false")
     _require(isinstance(lg.get("log_prompt_text"), bool), "logging.log_prompt_text must be true or false")
     _require(isinstance(lg.get("log_judge_details"), bool), "logging.log_judge_details must be true or false")
+
+    u = cfg["ui"]
+    _require(u.get("banner") in ("full", "compact", "off"), 'ui.banner must be "full", "compact" or "off"')
+    _require(isinstance(u.get("verdict_line"), bool), "ui.verdict_line must be true or false")
     return cfg
 
 

@@ -23,8 +23,9 @@ Fixes for the findings of an external review of 1.2.1. Each fix has a regression
 - `report` computes judge latency only from prompts a model judge rated, not from notifications and shortcuts.
 
 ### Added
+- **Terminal graphics.** `claude-router` opens with a framed, coloured banner of your routing: tiers and deployments, the judge chain, edit budgets and warnings. After each prompt Claude Code shows you a one-line verdict (a `systemMessage`, never sent to the model). `install.py` prints coloured ✓ / ! / ✗ marks. Colour is used only on terminals, `NO_COLOR` is honoured, and the banner falls back to ASCII where needed. The new `ui` settings (`banner`, `verdict_line`) turn it down or off.
 - `python install.py eval`: runs the judge chain over a labeled corpus and reports accuracy, under- and over-routing, latency and cost. A starter corpus of 30 synthetic prompts is in `tests/eval/`.
-- End-to-end: 8 new checks in 2 new scenarios (named main session, parallel calls), plus inherited-environment and `--settings` checks; 33 checks in total.
+- End-to-end: new scenarios for a named main session and parallel calls, plus inherited-environment, `--settings` and launcher-banner checks; 34 checks in total, and the report shows the banner as printed on each runner.
 
 ## [1.2.1] - 2026-11-18
 

@@ -50,6 +50,7 @@ class Run:
         if not self.claude:
             sys.exit("claude CLI not found; pass --claude")
         self.checks = []          # (scenario, ok, title, detail)
+        self.banner = ""
         self.notes = []
 
     # ------------------------------------------------------------------ helpers
@@ -249,6 +250,10 @@ class Run:
         self.check(s, main and all(r["model"] == DEPLOYMENTS["fast"] for r in main),
                    "with `--settings {}` passed by the user, requests still go to the Haiku deployment name",
                    "models=%s" % sorted({r["model"] for r in main}))
+        banner = [l for l in p.stderr.splitlines() if l.strip()]
+        self.banner = "\n".join(banner[:14])
+        self.check(s, any("model-router" in l for l in banner) and all(d in p.stderr for d in DEPLOYMENTS.values()),
+                   "the launcher printed its banner with all three deployments", (banner or [""])[0][:120])
         self.check(s, (work / "fast_small.txt").exists(), "guard ALLOWED a 5-line Write within the FAST budget (40)",
                    self.write_evidence(recs, "main", index=0))
         full = max(main, key=lambda r: len(r.get("tool_results") or [])) if main else {}
@@ -376,6 +381,9 @@ class Run:
         lines += ["", "**%d / %d checks passed.**" % (passed, len(self.checks))]
         if self.notes:
             lines += [""] + ["- " + n.replace("\n", " ") for n in self.notes]
+        if self.banner:
+            lines += ["", "What `claude-router` printed on this runner (no terminal, so no colour):", "", "```text",
+                      self.banner, "```"]
         text = "\n".join(lines) + "\n"
         sys.stdout.write(text)
         summary = os.environ.get("GITHUB_STEP_SUMMARY")

@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT / "router"))
 import common  # noqa: E402
 import judge_hook  # noqa: E402
 
-CODE_FILES = ["common.py", "judge_hook.py", "guard_hook.py", "launch.py", "judge_system.md"]
+CODE_FILES = ["common.py", "judge_hook.py", "guard_hook.py", "launch.py", "ui.py", "judge_system.md"]
 AGENT_FILES = ["architect.md", "implementer.md", "deep-haiku.md"]
 MARKER = "<!-- installed by claude-model-router -->"
 HOOK_SCRIPTS = ("judge_hook.py", "guard_hook.py")
@@ -44,7 +44,22 @@ IS_WINDOWS = os.name == "nt"
 
 # --------------------------------------------------------------------------- helpers
 
+PAINTER = None
+
+
 def say(msg=""):
+    """Print a line; on a colour terminal, [ok]/[warn]/[fail]/[todo] become coloured symbols."""
+    global PAINTER
+    if PAINTER is None:
+        import ui
+        PAINTER = ui.Painter(sys.stdout)
+    if PAINTER.color:
+        for level in ("ok", "warn", "fail", "todo"):
+            tag = "[%s]" % level
+            if msg.startswith(tag):
+                rest = msg[len(tag):].lstrip(" ")
+                msg = " %s %s" % (PAINTER.status(level), rest if level != "fail" else PAINTER.paint(rest, "fail"))
+                break
     sys.stdout.write(msg + "\n")
 
 
@@ -711,7 +726,10 @@ def cmd_doctor(args):
         bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or shutil.which("bash")
         report("ok" if bash else "warn", "Git Bash: %s" % (bash or "not found (fine with the default exec hook style)"))
     say("")
-    say("doctor: %d failure(s), %d warning(s)" % (problems["fail"], problems["warn"]))
+    summary = "doctor: %d failure(s), %d warning(s)" % (problems["fail"], problems["warn"])
+    if PAINTER is not None and PAINTER.color:
+        summary = PAINTER.paint(summary, "bold", "fail" if problems["fail"] else "warn" if problems["warn"] else "ok")
+    say(summary)
     return 1 if problems["fail"] else 0
 
 
