@@ -122,6 +122,34 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(report["status"], "REVIEW_REQUIRED")
         self.assertTrue(report["review_required"])
 
+    def test_external_review_requires_fresh_diff_and_reruns_checks(self):
+        self.pkg["risk"] = "high"
+        self._save()
+        self._preflight()
+        (self.repo / "feature.py").write_text("reviewed = True\n", encoding="utf-8")
+        verified = self._verify()
+        review_file = self.tmp / "review.json"
+        evidence = {"task_id": self.pkg["task_id"], "reviewer": "opus-independent",
+                    "decision": "approved", "change_digest": verified["change_digest"],
+                    "acceptance": verified["acceptance"], "findings": []}
+        review_file.write_text(json.dumps(evidence), encoding="utf-8")
+        (self.repo / "feature.py").write_text("stale = True\n", encoding="utf-8")
+        with self.assertRaisesRegex(handoff.HandoffError, "worktree changed"):
+            handoff.review(self.pkg_path, self.repo, review_file, self.state)
+        (self.repo / "feature.py").write_text("reviewed = True\n", encoding="utf-8")
+        prior = os.environ.get("CLAUDE_ROUTER_METRICS")
+        os.environ["CLAUDE_ROUTER_METRICS"] = str(self.metrics)
+        try:
+            reviewed = handoff.review(self.pkg_path, self.repo, review_file, self.state)
+        finally:
+            if prior is None:
+                os.environ.pop("CLAUDE_ROUTER_METRICS", None)
+            else:
+                os.environ["CLAUDE_ROUTER_METRICS"] = prior
+        self.assertEqual(reviewed["status"], "PASS_REVIEWED")
+        self.assertTrue(all(x["passed"] for x in reviewed["independent_checks"]))
+        self.assertEqual(handoff.metrics_report(self.metrics)["passed"], 1)
+
     def test_preflight_fails_closed_on_dirty_or_mismatched_baseline(self):
         (self.repo / "feature.py").write_text("dirty\n", encoding="utf-8")
         with self.assertRaisesRegex(handoff.HandoffError, "clean"):
