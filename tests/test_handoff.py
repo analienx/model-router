@@ -106,6 +106,7 @@ class HandoffTests(unittest.TestCase):
         self.pkg["verification_checks"][0]["command"] = [sys.executable, "-c", "import sys; sys.exit(3)"]
         self._save()
         self._preflight()
+        (self.repo / "feature.py").write_text("new = True\n", encoding="utf-8")
         first = self._verify()
         second = self._verify()
         self.assertEqual(first["status"], "RETRY_LOCAL")
