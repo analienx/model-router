@@ -121,7 +121,7 @@ Plain Python 3.8+ (standard library only), plus Claude Code's own hooks and agen
 
 Hard-task handoffs can now use a **machine-checked work package** instead of relying on instructions alone. `router/handoff.py` verifies the clean baseline and regression-first preflight, the edit hook enforces a narrow file allowlist, post-edit checks produce actionable retry/escalation evidence, and high-risk work requires a separate review attestation with fresh checks. A JSONL report tracks accepted work, retries, escalations and duration. This is off by default and does not change ordinary routing.
 
-See the [executable handoff guide](docs/HAIKU_HANDOFF.md) for the schema, activation, commands, review requirement, and exact limitations.
+To write the **simple step-by-step plan Haiku receives**, use the [Haiku Markdown plan template](docs/HAIKU_PLAN_TEMPLATE.md). For machine enforcement, see the [executable JSON handoff guide](docs/HAIKU_HANDOFF.md) for the schema, activation, commands, review requirement, and exact limitations.
 
 ## Quick start
 
