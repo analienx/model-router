@@ -35,7 +35,7 @@ def _metrics_path():
 def _safe_path(path):
     if not isinstance(path, str) or not path or "\x00" in path:
         raise HandoffError("scope paths must be nonempty strings")
-    p = path.replace("\\\\", "/")
+    p = path.replace("\\", "/")
     if p.startswith("/") or re.match(r"^[A-Za-z]:", p):
         raise HandoffError("scope paths must be repository-relative: " + path)
     parts = p.split("/")
@@ -154,11 +154,11 @@ def _changed(repo):
             continue
         if len(rec) < 4:
             raise HandoffError("malformed git status record")
-        paths.append(rec[3:].replace("\\\\", "/"))
+        paths.append(rec[3:].replace("\\", "/"))
         if "R" in rec[:2] or "C" in rec[:2]:
             if i >= len(parts):
                 raise HandoffError("malformed git rename record")
-            paths.append(parts[i].replace("\\\\", "/"))
+            paths.append(parts[i].replace("\\", "/"))
             i += 1
     return sorted(set(paths))
 
