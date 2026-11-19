@@ -1,0 +1,52 @@
+name: Handoff executable proof
+
+on:
+  pull_request:
+    paths:
+      - "router/handoff.py"
+      - "router/guard_hook.py"
+      - "tests/e2e/handoff_smoke.py"
+      - ".github/workflows/handoff-e2e.yml"
+      - "install.py"
+  push:
+    branches: [main]
+    paths:
+      - "router/handoff.py"
+      - "router/guard_hook.py"
+      - "tests/e2e/handoff_smoke.py"
+      - ".github/workflows/handoff-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  handoff:
+    name: handoff · ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, python: "3.8" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: windows-latest, python: "3.13" }
+          - { os: macos-latest, python: "3.13" }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Execute real git + handoff CLI + guard + review scenarios
+        run: python tests/e2e/handoff_smoke.py --output handoff-e2e-report.json
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: handoff-${{ matrix.os }}-py${{ matrix.python }}
+          path: handoff-e2e-report.json
+          if-no-files-found: warn
