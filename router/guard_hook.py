@@ -228,6 +228,20 @@ def main():
     changed = changed_lines(tool, inp)
     if changed is None:
         return 0
+    # Explicit opt-in: enforce the active package's verified, file-level scope
+    # before the usual line-budget exemption for architect/implementer agents.
+    package = os.environ.get("CLAUDE_ROUTER_HANDOFF")
+    if package:
+        import handoff
+        filepath = inp.get("notebook_path") if tool == "NotebookEdit" else inp.get("file_path")
+        repo = os.environ.get("CLAUDE_ROUTER_HANDOFF_REPO") or data.get("cwd") or os.getcwd()
+        try:
+            allowed = handoff.edit_allowed(
+                package, filepath, repo, os.environ.get("CLAUDE_ROUTER_HANDOFF_STATE"))
+        except handoff.HandoffError as exc:
+            return deny("Handoff preflight or contract invalid: %s. Stop and escalate to Opus." % exc)
+        if not allowed:
+            return deny("Handoff scope violation: %s is not in allowed_paths. Stop and escalate to Opus." % filepath)
     if agent in common.EDIT_AGENTS:
         return 0
     if agent:
