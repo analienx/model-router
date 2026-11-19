@@ -20,7 +20,7 @@
 
 ### Haiku does the easy work. A judge decides what is hard.<br>Sonnet and Opus get the rest, and hooks enforce it.
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Proof](#proof-it-really-works) · [FAQ](#faq) · [Setup guide](docs/SETUP.md) · [Changelog](CHANGELOG.md)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Choosing models](#choosing-the-models) · [Proof](#proof-it-really-works) · [FAQ](#faq) · [Setup guide](docs/SETUP.md) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -133,7 +133,7 @@ Plain Python 3.8+ (standard library only), plus Claude Code's own hooks and agen
 ◆ router: FAST → Haiku handles it (edits ≤ 40 lines) · your ::fast override
 ```
 
-`ui.banner` (`full`, `compact`, `off`) and `ui.verdict_line` turn these off ([guide, section 5.9](docs/SETUP.md#59-ui)). `NO_COLOR` is honoured, and consoles that can't print box drawing get plain ASCII.
+`ui.banner` (`full`, `compact`, `off`) and `ui.verdict_line` turn these off ([guide, section 5.10](docs/SETUP.md#510-ui)). `NO_COLOR` is honoured, and consoles that can't print box drawing get plain ASCII.
 
 ### What the hooks say
 
@@ -198,6 +198,21 @@ Each run's summary has the full report: 34 checks, with the hooks' output as evi
 
 > [!NOTE]
 > **Not proven automatically:** a real Foundry resource, a real subscription judge call (CI runners have no login, so the test asserts that this step fails cleanly), real interactive use, and how well the judge routes *your* prompts: the mock scripts its verdicts. `doctor`, `test-judge` and your first session ([guide, section 6](docs/SETUP.md#6-verify-the-installation)) cover the first three on your machine, and `python install.py eval` measures routing quality on labeled prompts ([guide, section 9](docs/SETUP.md#9-tuning-and-calibration)).
+
+## Choosing the models
+
+Every tier's model and the judge are one command away. Each command checks the values before it saves anything:
+
+```powershell
+python install.py config                       # what each tier and the judge use now
+python install.py config wizard                # guided: Foundry, each tier's model / deployment / effort, the judge
+python install.py config tier deep --model claude-fable-5-2 --deployment fable-prod --effort max
+python install.py config preset opus-judge     # or: balanced, azure-only, quick, rules-only
+python install.py config judge "subscription:opus:high, foundry:deep, rules"
+claude-router --router-preset azure-only       # just this session
+```
+
+A judge step is `backend:model[:effort[:timeout]]`, and the model can be an alias, a tier (`deep` = whatever DEEP uses) or a full model id. Details: [guide, section 5.3](docs/SETUP.md#53-choosing-models-and-the-judge-without-editing-json).
 
 ## Configuration at a glance
 

@@ -85,7 +85,7 @@ The judge receives **only** its instructions (`judge_system.md`), the items in t
 
 Organisation-managed policy files still apply, as they do for every Claude Code run.
 
-So once the router is installed, each prompt goes to **two providers**. If your company chose Azure Foundry for compliance or data residency, **get approval for the judge path first**. If you can't get it, delete the `subscription` step from `judge.chain` (section 5.6). The judge then runs on Foundry only and nothing goes to the subscription.
+So once the router is installed, each prompt goes to **two providers**. If your company chose Azure Foundry for compliance or data residency, **get approval for the judge path first**. If you can't get it, delete the `subscription` step from `judge.chain` (section 5.7). The judge then runs on Foundry only and nothing goes to the subscription.
 
 
 **What the router keeps on your machine** (in `%USERPROFILE%\.claude-router`):
@@ -108,7 +108,7 @@ Tick every line before step 4.
 - [ ] **Claude subscription login works.** You can sign in to Claude Code with your Claude account, for example your company's Enterprise SSO (step 4.3).
 - [ ] **An Azure Microsoft Foundry resource** with Claude deployments. You need:
   - the **resource name**: the part before `.services.ai.azure.com`, for example `contoso-ai`
-  - the **deployment name and model** of each Claude deployment you want to use: Haiku, Sonnet and Opus. Not all three are required (section 5.3).
+  - the **deployment name and model** of each Claude deployment you want to use: Haiku, Sonnet and Opus. Not all three are required (section 5.4).
 - [ ] **Azure access**, one of:
   - **Microsoft Entra ID (recommended):** your account has the **Foundry User** role (older name *Azure AI User*) or **Cognitive Services User** on the Foundry resource, and the Azure CLI (`az`) is installed so you can run `az login`.
   - **API key:** a key from the resource's *Endpoints and keys* page, which you will keep in an environment variable. Never put it in a file.
@@ -164,7 +164,7 @@ The judge calls `claude -p` **without any Foundry variables**, so it uses the ac
    - the **deployment name**
    - the **model and version**. Microsoft recommends pinning a specific version rather than "auto-update to latest".
 
-   Best practice from the Claude Code docs: **name each deployment after its model ID**, for example a deployment called `claude-opus-5-5` for Opus 5.5. If your names differ, for example `team-opus-prod`, that's fine: section 5.3 shows how to map them.
+   Best practice from the Claude Code docs: **name each deployment after its model ID**, for example a deployment called `claude-opus-5-5` for Opus 5.5. If your names differ, for example `team-opus-prod`, that's fine: section 5.4 shows how to map them.
 3. **Entra ID:** make sure you have the **Foundry User** or **Cognitive Services User** role on the resource, then run:
 
    ```powershell
@@ -224,7 +224,7 @@ python install.py install --hook-style powershell   # no Git Bash
 
 ### 4.6 Edit the configuration
 
-Open `%USERPROFILE%\.claude-router\router.config.json` and set at least:
+Run `python install.py config wizard` and answer the questions (section 5.3), or open `%USERPROFILE%\.claude-router\router.config.json` and set at least:
 
 - `foundry.resource`: your resource name, for example `contoso-ai`;
 - `tiers.*.deployment` and `tiers.*.model_id`: your deployments.
@@ -285,7 +285,7 @@ After each prompt, Claude Code shows you one line with the verdict. It is shown 
 ◆ router: FAST → Haiku handles it (edits ≤ 40 lines) · your ::fast override
 ```
 
-Background-agent notifications stay quiet, except when one unlocks the `deep-haiku` fallback. The look is set in section 5.9. Colour follows the usual conventions: none when output isn't a terminal or `NO_COLOR` is set, forced with `FORCE_COLOR=1`. Where the console can't print box-drawing characters (some Windows code pages), the banner falls back to plain ASCII.
+Background-agent notifications stay quiet, except when one unlocks the `deep-haiku` fallback. The look is set in section 5.10. Colour follows the usual conventions: none when output isn't a terminal or `NO_COLOR` is set, forced with `FORCE_COLOR=1`. Where the console can't print box-drawing characters (some Windows code pages), the banner falls back to plain ASCII.
 
 Any normal `claude` arguments still work, for example `claude-router --resume` or `claude-router -c`.
 
@@ -348,7 +348,62 @@ The file lives at `%USERPROFILE%\.claude-router\router.config.json`; set the env
 | `api_key_env` | Name of the environment variable that holds the key (default `FOUNDRY_API_KEY`). The key itself is never written to any file. |
 | `prompt_caching_1h` | `true` sets `ENABLE_PROMPT_CACHING_1H=1`, a one-hour cache instead of the default. Cache writes cost more with the 1-hour TTL. |
 
-### 5.3 `tiers`: map tiers to your Foundry deployments
+### 5.3 Choosing models and the judge without editing JSON
+
+Everything in this section can also be done by editing the file, but these commands validate every value first and change nothing if one is wrong. They keep a backup of the previous file in the router's `backups` folder, and they rewrite the router's agent files when a tier's effort changes.
+
+```powershell
+python install.py config                      # show: each tier's model, deployment and effort, and the judge
+python install.py config wizard               # answer a few questions (Enter keeps the current value)
+
+# the model and deployment of a tier, and its effort
+python install.py config tier deep --model claude-fable-5-2 --deployment fable-prod --effort max
+python install.py config tier standard --deployment team-sonnet --effort high
+python install.py config tier fast --effort low --fallback-effort max
+python install.py config tier deep --deployment none        # no deployment: DEEP work goes to the STANDARD tier
+
+# the judge: a preset, or your own chain
+python install.py config preset                             # list the presets
+python install.py config preset opus-judge
+python install.py config judge "subscription:opus:high, foundry:deep:high, rules"
+
+# any other field, by its dotted name
+python install.py config set ui.banner compact
+python install.py config set judge.min_confidence 0.7
+```
+
+**Tiers.** Each tier is one model: `fast` runs the main session (and `deep-haiku`, the 429 fallback), `standard` runs `implementer`, and `deep` runs `architect`. Any Claude model your Foundry resource has can sit in any tier, including a stronger model as `deep` or a Sonnet-class model as `fast`. `effort` is the reasoning effort for that tier: `low`, `medium`, `high`, `xhigh`, `max`, or `default` for Claude Code's own default. For `fast` it is passed to the main session as `--effort`, unless you pass your own.
+
+**The judge** is a chain of steps tried in order. Each step is written `backend:model[:effort[:timeout_s]]`:
+
+| Part | Values |
+|---|---|
+| backend | `subscription` (your Claude login) or `foundry` (your Azure resource); the word `rules` alone is the keyword rules |
+| model | an alias (`haiku`, `sonnet`, `opus`, `fable`), a tier (`fast`, `standard`, `deep`: whatever model that tier uses) or a full model id |
+| effort | optional: `low` … `max` |
+| timeout_s | optional: seconds before the next step is tried (default 90 for subscription, 45 for Foundry) |
+
+| Preset | Judge chain | Use it when |
+|---|---|---|
+| `balanced` (default) | subscription Sonnet (max) → Foundry Sonnet (high) → rules | you have a Claude subscription |
+| `azure-only` | Foundry Sonnet (high) → rules | nothing may go outside Azure |
+| `opus-judge` | subscription Opus (high) → Foundry Opus (high) → rules | judging quality matters more than a few extra seconds |
+| `quick` | subscription Haiku (low) → rules | you want the shortest wait and accept a weaker judge |
+| `rules-only` | keyword rules | no network, no cost; for testing or offline work |
+
+**For one session only**, without changing the file:
+
+```powershell
+claude-router --router-preset azure-only
+claude-router --router-judge "foundry:opus:high, rules"
+claude-router --router-tier deep=claude-fable-5-2@fable-prod      # TIER=MODEL_ID[@DEPLOYMENT]
+```
+
+The banner shows the settings in force. The launcher hands the same overrides to the hooks through `CLAUDE_ROUTER_OVERRIDES`, so the judge and the guard follow them too.
+
+After changing the judge's timeouts, run `python install.py install` again so the hook's own timeout grows with them.
+
+### 5.4 `tiers`: map tiers to your Foundry deployments
 
 | Tier | Claude Code alias | Used by | Default model id |
 |---|---|---|---|
@@ -392,7 +447,7 @@ The launcher sets `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MOD
 
 **Example E: no Haiku deployment.** The main session then runs on your Sonnet deployment, so there are no savings, but routing still works.
 
-### 5.4 `launcher`
+### 5.5 `launcher`
 
 | Field | Meaning |
 |---|---|
@@ -400,7 +455,7 @@ The launcher sets `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MOD
 | `fallback_models` | Optional `--fallback-model` chain, for example `["sonnet", "haiku"]`. Claude Code uses it only when a model is **overloaded or unavailable**, not on rate limits (429). The switch lasts one turn and also applies to subagents. |
 | `extra_args` | Extra arguments always passed to `claude`, for example `["--permission-mode", "plan"]`. |
 
-### 5.5 `judge`
+### 5.6 `judge`
 
 | Field | Meaning |
 |---|---|
@@ -418,7 +473,7 @@ The launcher sets `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MOD
 
 The judge's instructions are in `%USERPROFILE%\.claude-router\router\judge_system.md`. Edit the **team-specific examples** at its end; this is the best way to make the judge match your code (section 9).
 
-### 5.6 Common judge variants
+### 5.7 Common judge variants
 
 Subscription judge at high effort, a good balance between speed and quality:
 
@@ -446,14 +501,14 @@ No model judge, so instant and free, but much weaker:
 
 After changing timeouts, run `python install.py install` again so the hook timeout covers the whole chain.
 
-### 5.7 `guard`
+### 5.8 `guard`
 
 | Field | Meaning |
 |---|---|
 | `main_edit_budget` | Total lines the **main Haiku thread** may change per prompt, by tier. Defaults: FAST 40, STANDARD 10, DEEP 0. Beyond that, edits are denied with a message telling Haiku to delegate. |
 | `other_subagent_edit_lines` | Total lines per prompt that subagents other than `implementer`, `architect` and `deep-haiku` may change, together. Those other subagents, such as `general-purpose` and forks, run on Haiku. |
 
-### 5.8 `logging`
+### 5.9 `logging`
 
 | Field | Meaning |
 |---|---|
@@ -463,7 +518,7 @@ After changing timeouts, run `python install.py install` again so the hook timeo
 
 ---
 
-### 5.9 `ui`
+### 5.10 `ui`
 
 | Field | Meaning |
 |---|---|
@@ -714,7 +769,7 @@ These are rough estimates; measure your own with `test-judge` and `report`.
 | `claude-router` is not recognised | The `bin` folder isn't on PATH | Section 4.7, then open a new terminal |
 | PowerShell: "running scripts is disabled" | Execution policy blocks `.ps1` | Run `claude-router.cmd`, or delete `claude-router.ps1` |
 | `Failed to get token from azureADTokenProvider: ChainedTokenCredential authentication failed` | No Azure credential | Run `az login` (with the right `--tenant`), or switch to `auth: "api_key_env"` |
-| "Switched to … because … is not available", or "model not found" | Deployment name or model ID mismatch | Fix `tiers` (section 5.3); check deployment names in the portal; `claude-router --router-dry-run` shows what is being used |
+| "Switched to … because … is not available", or "model not found" | Deployment name or model ID mismatch | Fix `tiers` (section 5.4); check deployment names in the portal; `claude-router --router-dry-run` shows what is being used |
 | Every verdict comes from `rules` and the log shows judge errors | The subscription judge fails | Run `python install.py test-judge --backend subscription` to see the real error. Usually you aren't logged in (step 4.3), the hooks can't find `claude` (set `judge.claude_path`), or it times out (lower the effort or raise `timeout_s` and reinstall) |
 | The judge works but every prompt is slow | Max effort | `effort: "high"`, or a lower `timeout_s` so the fallback starts sooner |
 | `/hooks` shows nothing | Wrong scope or settings file, or the session was started before installing | Re-run install for the right scope and restart `claude-router`; check that `doctor` reports "router hooks installed" |
