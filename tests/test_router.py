@@ -1329,7 +1329,9 @@ class UiTests(RouterTestCase):
         self.assertIn("model-router", p.stderr)
         self.assertIn("\u256d", p.stderr)
         self.assertIn("no router hooks", p.stderr)
-        self.assertNotIn("model-router", p.stdout)
+        # stdout carries only the dry-run report (its paths may contain "model-router"), never the banner
+        self.assertNotIn("difficulty-based model routing", p.stdout)
+        self.assertNotIn("\u256d", p.stdout)
         self.assertNotIn("\x1b", p.stderr, "no colour when stderr is not a terminal")
 
 
