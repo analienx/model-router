@@ -273,6 +273,23 @@ def edit_allowed(package, file_path, repo, state_file=None):
     return path_allowed(rel, pkg["allowed_paths"])
 
 
+def _change_digest(repo, paths):
+    """Fingerprint changed paths and bytes; reject review of a stale diff."""
+    digest = hashlib.sha256()
+    for rel in sorted(paths):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        path = repo / rel
+        if path.is_file():
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(65536), b""):
+                    digest.update(chunk)
+        else:
+            digest.update(b"<deleted>")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _write_metric(pkg, result, state):
     line = {"task_id": pkg["task_id"], "status": result["status"],
             "attempts": state["attempts"], "duration_s": round(time.time() - state["started_at"], 2),
@@ -308,9 +325,60 @@ def verify(package, repo, state_file=None):
         status = "REVIEW_REQUIRED" if pkg.get("review_required", False) or pkg.get("risk") == "high" else "PASS"
         reason = "independent_review_pending" if status == "REVIEW_REQUIRED" else "verified"
     result = {"task_id": pkg["task_id"], "status": status, "reason": reason,
-              "attempt": state["attempts"], "changed_files": changed, "unauthorized_files": unauthorized,
+              "attempt": state["attempts"], "changed_files": changed, "change_digest": _change_digest(root, changed),
+              "unauthorized_files": unauthorized,
               "checks": checks, "acceptance": acceptance,
               "review_required": pkg.get("review_required", False) or pkg.get("risk") == "high"}
+    state["status"] = status
+    state["result"] = result
+    _write_json(path, state)
+    _write_metric(pkg, result, state)
+    return result
+
+
+def review(package, repo, review_file, state_file=None):
+    """Accept an externally produced review attestation and re-run checks.
+
+    A JSON assertion cannot prove reviewer identity. An external supervisor must
+    arrange genuine independence; this runner verifies freshness and evidence.
+    """
+    pkg, digest = load_package(package)
+    root = _repo_root(repo)
+    path = _state_file(pkg, state_file)
+    state = _read_state(path)
+    if state.get("package_hash") != digest or state.get("repository") != str(root):
+        raise HandoffError("package or repository changed since preflight")
+    if state.get("status") != "REVIEW_REQUIRED":
+        raise HandoffError("review is only valid after passing verification requiring review")
+    try:
+        evidence = json.loads(Path(review_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HandoffError("cannot read review evidence: %s" % exc)
+    prior = state.get("result", {})
+    if not isinstance(evidence, dict) or evidence.get("task_id") != pkg["task_id"]:
+        raise HandoffError("review task_id does not match package")
+    reviewer = evidence.get("reviewer")
+    if not isinstance(reviewer, str) or not reviewer.strip() or reviewer.strip().lower() in ("haiku", "executor"):
+        raise HandoffError("external reviewer identity required")
+    if evidence.get("decision") not in ("approved", "changes_requested"):
+        raise HandoffError("review decision must be approved or changes_requested")
+    if evidence.get("change_digest") != prior.get("change_digest"):
+        raise HandoffError("review must reference the exact verified change_digest")
+    if evidence.get("acceptance") != prior.get("acceptance"):
+        raise HandoffError("review must assess each acceptance criterion")
+    findings = evidence.get("findings")
+    if not isinstance(findings, list) or not all(isinstance(x, str) for x in findings):
+        raise HandoffError("review findings must be a list of strings")
+    changed = _changed(root)
+    if changed != prior.get("changed_files") or _change_digest(root, changed) != prior.get("change_digest"):
+        raise HandoffError("worktree changed after verification; rerun the handoff")
+    _assert_baseline(pkg, root)
+    checks = [_run_check(item, root) for item in pkg["verification_checks"]]
+    approved = (evidence["decision"] == "approved" and all(x["passed"] for x in checks)
+                and all(prior["acceptance"].values()) and not findings)
+    status = "PASS_REVIEWED" if approved else "ESCALATE"
+    result = dict(prior, status=status, reason="reviewed" if approved else "review_or_check_failed",
+                  reviewer=reviewer, review_findings=findings, independent_checks=checks)
     state["status"] = status
     state["result"] = result
     _write_json(path, state)
@@ -333,7 +401,7 @@ def metrics_report(path=None):
     for item in records:
         final[item.get("task_id")] = item
     total = len(final)
-    return {"tasks": total, "passed": sum(x.get("status") == "PASS" for x in final.values()),
+    return {"tasks": total, "passed": sum(x.get("status") in ("PASS", "PASS_REVIEWED") for x in final.values()),
             "review_pending": sum(x.get("status") == "REVIEW_REQUIRED" for x in final.values()),
             "escalated": sum(x.get("status") == "ESCALATE" for x in final.values()),
             "mean_attempts": round(sum(x.get("attempts", 0) for x in final.values()) / total, 2) if total else 0,
@@ -348,6 +416,11 @@ def main(argv=None):
         sub.add_argument("package")
         sub.add_argument("--repo", default=".")
         sub.add_argument("--state", default=None)
+    sub = cmds.add_parser("review")
+    sub.add_argument("package")
+    sub.add_argument("review_file")
+    sub.add_argument("--repo", default=".")
+    sub.add_argument("--state", default=None)
     sub = cmds.add_parser("report")
     sub.add_argument("--metrics", default=None)
     args = parser.parse_args(argv)
@@ -356,10 +429,12 @@ def main(argv=None):
             result = preflight(args.package, args.repo, args.state)
         elif args.command == "verify":
             result = verify(args.package, args.repo, args.state)
+        elif args.command == "review":
+            result = review(args.package, args.repo, args.review_file, args.state)
         else:
             result = metrics_report(args.metrics)
         print(json.dumps(result, indent=2, sort_keys=True))
-        return 0 if result.get("status", "PASS") in ("PASS", "READY", "REVIEW_REQUIRED") else 2
+        return 0 if result.get("status", "PASS") in ("PASS", "PASS_REVIEWED", "READY", "REVIEW_REQUIRED") else 2
     except HandoffError as exc:
         print(json.dumps({"status": "ESCALATE", "reason": "precondition_or_contract", "error": str(exc)}))
         return 2
