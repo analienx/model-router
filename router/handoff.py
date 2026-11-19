@@ -90,6 +90,8 @@ def load_package(path):
         raise HandoffError("risk must be low, medium or high")
     if not isinstance(pkg.get("review_required", False), bool):
         raise HandoffError("review_required must be boolean")
+    if not isinstance(pkg.get("require_changes", True), bool):
+        raise HandoffError("require_changes must be boolean")
     retries = pkg.get("max_local_retries", 1)
     if isinstance(retries, bool) or not isinstance(retries, int) or not 0 <= retries <= 3:
         raise HandoffError("max_local_retries must be an integer from 0 to 3")
@@ -310,14 +312,17 @@ def verify(package, repo, state_file=None):
     _require_active(pkg, digest, state, root)
     changed = _changed(root)
     unauthorized = [p for p in changed if not path_allowed(p, pkg["allowed_paths"])]
-    checks = [] if unauthorized else [_run_check(c, root) for c in pkg["verification_checks"]]
+    no_changes = not changed and pkg.get("require_changes", True)
+    checks = [] if unauthorized or no_changes else [_run_check(c, root) for c in pkg["verification_checks"]]
     state["attempts"] += 1
     failures = {c["id"] for c in checks if not c["passed"]}
-    acceptance = {a["id"]: not unauthorized and all(c not in failures for c in a["checks"])
+    acceptance = {a["id"]: not (unauthorized or no_changes) and all(c not in failures for c in a["checks"])
                   for a in pkg["acceptance"]}
     if unauthorized:
         status = "ESCALATE"
         reason = "scope_breach"
+    elif no_changes:
+        status, reason = "ESCALATE", "no_change_evidence"
     elif failures:
         status = "RETRY_LOCAL" if state["attempts"] <= pkg.get("max_local_retries", 1) else "ESCALATE"
         reason = "verification_failure"
@@ -401,7 +406,10 @@ def metrics_report(path=None):
     for item in records:
         final[item.get("task_id")] = item
     total = len(final)
-    return {"tasks": total, "passed": sum(x.get("status") in ("PASS", "PASS_REVIEWED") for x in final.values()),
+    accepted = [x for x in final.values() if x.get("status") in ("PASS", "PASS_REVIEWED")]
+    return {"tasks": total, "passed": len(accepted),
+            "first_pass": sum(x.get("attempts") == 1 for x in accepted),
+            "acceptance_rate": round(len(accepted) / total, 3) if total else 0,
             "review_pending": sum(x.get("status") == "REVIEW_REQUIRED" for x in final.values()),
             "escalated": sum(x.get("status") == "ESCALATE" for x in final.values()),
             "mean_attempts": round(sum(x.get("attempts", 0) for x in final.values()) / total, 2) if total else 0,
