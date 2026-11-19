@@ -117,6 +117,12 @@ Plain Python 3.8+ (standard library only), plus Claude Code's own hooks and agen
 
 <sub>An example prompt. The <code>[router]</code> lines are the hooks' own messages, shortened. The end-to-end test captures them from the real Claude Code on every CI run.</sub>
 
+## Opt-in executable Opus-to-Haiku handoffs
+
+Hard-task handoffs can now use a **machine-checked work package** instead of relying on instructions alone. `router/handoff.py` verifies the clean baseline and regression-first preflight, the edit hook enforces a narrow file allowlist, post-edit checks produce actionable retry/escalation evidence, and high-risk work requires a separate review attestation with fresh checks. A JSONL report tracks accepted work, retries, escalations and duration. This is off by default and does not change ordinary routing.
+
+See the [executable handoff guide](docs/HAIKU_HANDOFF.md) for the schema, activation, commands, review requirement, and exact limitations.
+
 ## Quick start
 
 **You need:** Claude Code (2.1.327 tested), Python 3.8+, a Claude subscription login for the judge, and an Azure Foundry resource with Claude deployments.
